@@ -191,12 +191,12 @@ class TestClipGradNorm(FSDPTest):
 
         # Check that the gradients were modified by `clip_grad_norm_()`
         for param, orig_grad in zip(ddp_model.parameters(), orig_ddp_grads):
-            assert not torch.equal(param.grad, orig_grad)
+            self.assertNotEqual(param.grad, orig_grad, rtol=0, atol=0, exact_device=True)
         for param, orig_grad in zip(fsdp_model.parameters(), orig_fsdp_grads):
             if param.grad is None:
-                self.assertEqual(param.grad, orig_grad)  # `None`
+                self.assertIsNone(orig_grad)
             else:
-                assert not torch.equal(param.grad, orig_grad)
+                self.assertNotEqual(param.grad, orig_grad, rtol=0, atol=0, exact_device=True)
 
         # Run an optimizer step to ensure gradients matched after clipping
         ddp_optim.step()
@@ -208,6 +208,35 @@ class TestClipGradNorm(FSDPTest):
             ):
                 self.assertEqual(n1, n2)
                 self.assertEqual(p1, p2)
+
+        if offload_params:
+            # TODO: Gradient computation on CPU and GPU differ slightly causing
+            # drift unrelated to `clip_grad_norm_()`.
+            # https://github.com/pytorch/pytorch/issues/89133
+            return
+
+        # Run a few more iterations
+        # TODO: We cannot run too many iterations, or else there is drift:
+        # https://github.com/pytorch/pytorch/issues/89136
+        for i in range(3):
+            set_to_none = i % 2 == 0  # exercise both
+            ddp_optim.zero_grad(set_to_none=set_to_none)
+            fsdp_optim.zero_grad(set_to_none=set_to_none)
+            inp = ddp_model.module.get_input(device)
+            for model in (ddp_model, fsdp_model):
+                out = model(*inp)
+                out.sum().backward()
+            ddp_total_norm = torch.nn.utils.clip_grad_norm_(
+                ddp_model.parameters(),
+                max_norm=max_norm,
+                norm_type=norm_type,
+            )
+            fsdp_total_norm = fsdp_model.clip_grad_norm_(
+                max_norm=max_norm, norm_type=norm_type
+            )
+            self.assertEqual(ddp_total_norm, fsdp_total_norm)
+            ddp_optim.step()
+            fsdp_optim.step()
 
 
 instantiate_parametrized_tests(TestClipGradNorm)
