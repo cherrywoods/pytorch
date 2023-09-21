@@ -5,12 +5,12 @@
 #include <c10/macros/Export.h>
 #include <c10/util/Optional.h>
 #include <c10/util/SmallVector.h>
-#include <c10/util/variant.h>
 
 #include <array>
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <variant>
 
 namespace c10 {
 class TORCH_API OperatorHandle;
@@ -91,7 +91,7 @@ constexpr std::size_t kSoftLimitCallbacks = 4;
 // An abstract base class for various observer contexts that can be attached to
 // the RecordFunction.
 struct ObserverContext {
-  virtual ~ObserverContext() {}
+  virtual ~ObserverContext() = default;
 
  protected:
   ObserverContext() {}
@@ -456,7 +456,7 @@ struct TORCH_API RecordFunction {
   // Stores various ObserverContext objects with event metadata for callbacks.
   ObserverContextList ctx_;
 
-  c10::variant<std::string, schema_ref_t> fn_;
+  std::variant<std::string, schema_ref_t> fn_;
 
   int64_t sequence_nr_ = -1;
   c10::ArrayRef<const IValue> inputs_;
@@ -709,7 +709,7 @@ class TORCH_API RecordFunctionGuard {
 class TORCH_API DisableRecordFunctionGuard : public RecordFunctionGuard {
  public:
   DisableRecordFunctionGuard() : RecordFunctionGuard(false) {}
-  virtual ~DisableRecordFunctionGuard() {}
+  ~DisableRecordFunctionGuard() override = default;
 };
 
 struct TORCH_API RecordFunctionTLS {

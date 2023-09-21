@@ -3,26 +3,15 @@
 from itertools import repeat
 import os
 import re
-import sys
-from typing import Union
+from typing import Union, get_args, get_origin
 import unittest
 
 import torch.testing._internal.common_utils as common
-from torch.testing._internal.common_utils import IS_WINDOWS
+from torch.testing._internal.common_utils import IS_WINDOWS, skipIfTorchDynamo
 from torch.testing._internal.common_cuda import TEST_CUDA
 import torch
 import torch.backends.cudnn
 import torch.utils.cpp_extension
-
-if sys.version_info >= (3, 8):
-    from typing import get_args, get_origin
-else:
-    def get_args(tp):
-        return tp.__args__
-
-    def get_origin(tp):
-        if hasattr(tp, "__origin__"):
-            return tp.__origin__
 
 try:
     import pytest
@@ -95,6 +84,19 @@ class TestCppExtensionAOT(common.TestCase):
 
         # 2 * sigmoid(0) = 2 * 0.5 = 1
         self.assertEqual(z, torch.ones_like(z))
+
+    @unittest.skipIf(not torch.backends.mps.is_available(), "MPS not found")
+    def test_mps_extension(self):
+        import torch_test_cpp_extension.mps as mps_extension
+
+        tensor_length = 100000
+        x = torch.randn(tensor_length, device="cpu", dtype=torch.float32)
+        y = torch.randn(tensor_length, device="cpu", dtype=torch.float32)
+
+        cpu_output = mps_extension.get_cpu_add_output(x, y)
+        mps_output = mps_extension.get_mps_add_output(x.to("mps"), y.to("mps"))
+
+        self.assertEqual(cpu_output, mps_output.to("cpu"))
 
     @common.skipIfRocm
     @unittest.skipIf(common.IS_WINDOWS, "Windows not supported")
@@ -202,11 +204,12 @@ class TestPybindTypeCasters(common.TestCase):
         In these cases we expect to get exactly one function per python type.
         """
         # Verify that all functions have the same return type.
-        union_type = set(self.expected_return_type(f) for f in funcs)
+        union_type = {self.expected_return_type(f) for f in funcs}
         assert len(union_type) == 1
         union_type = union_type.pop()
         self.assertIs(Union, get_origin(union_type))
-        expected_types = set(get_args(union_type))
+        # SymInt is inconvenient to test, so don't require it
+        expected_types = set(get_args(union_type)) - {torch.SymInt}
         for func in funcs:
             val = func()
             for tp in expected_types:
@@ -230,7 +233,7 @@ class TestPybindTypeCasters(common.TestCase):
             cpp_extension.get_tensor,
         ]
         union_functions = [
-            [cpp_extension.get_symint, cpp_extension.get_symint_symbolic],
+            [cpp_extension.get_symint],
         ]
         for func in functions:
             with self.subTest(msg=f"check {func.__name__}"):
@@ -246,6 +249,7 @@ class TestORTTensor(common.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Could not run"):
             b = torch.arange(0, 10, device='ort')
 
+    @skipIfTorchDynamo("dynamo cannot model ort device")
     def test_zeros(self):
         a = torch.empty(5, 5, device='cpu')
         self.assertEqual(a.device, torch.device('cpu'))
@@ -293,8 +297,9 @@ class TestORTTensor(common.TestCase):
 class TestRNGExtension(common.TestCase):
 
     def setUp(self):
-        super(TestRNGExtension, self).setUp()
+        super().setUp()
 
+    @skipIfTorchDynamo("https://github.com/pytorch/torchdynamo/issues/1991")
     def test_rng(self):
         fourty_two = torch.full((10,), 42, dtype=torch.int64)
 

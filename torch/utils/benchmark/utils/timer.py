@@ -13,7 +13,7 @@ from torch.utils.benchmark.utils.valgrind_wrapper import timer_interface as valg
 __all__ = ["Timer", "timer", "Language"]
 
 
-if torch.has_cuda and torch.cuda.is_available():
+if torch.backends.cuda.is_built() and torch.cuda.is_available():
     def timer() -> float:
         torch.cuda.synchronize()
         return timeit.default_timer()
@@ -64,7 +64,7 @@ class CPPTimer:
         return self._timeit_module.timeit(number)
 
 
-class Timer(object):
+class Timer:
     """Helper class for measuring execution time of PyTorch statements.
 
     For a full tutorial on how to use this class, see:

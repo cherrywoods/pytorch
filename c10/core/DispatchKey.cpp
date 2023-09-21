@@ -29,6 +29,8 @@ const char* toString(BackendComponent t) {
       return "HPUBit";
     case BackendComponent::VEBit:
       return "VEBit";
+    case BackendComponent::MTIABit:
+      return "MTIA";
     case BackendComponent::PrivateUse1Bit:
       return "PrivateUse1Bit";
     case BackendComponent::PrivateUse2Bit:
@@ -77,6 +79,8 @@ const char* toString(DispatchKey t) {
       return "MPS";
     case DispatchKey::HPU:
       return "HPU";
+    case DispatchKey::MTIA:
+      return "MTIA";
 
     case DispatchKey::Quantized:
       return "Quantized";
@@ -136,13 +140,21 @@ const char* toString(DispatchKey t) {
       return "AutocastCPU";
     case DispatchKey::AutocastXPU:
       return "AutocastXPU";
+    case DispatchKey::AutocastIPU:
+      return "AutocastIPU";
     case DispatchKey::AutocastHPU:
       return "AutocastHPU";
     case DispatchKey::AutocastCUDA:
       return "AutocastCUDA";
+    case DispatchKey::AutocastXLA:
+      return "AutocastXLA";
+    case DispatchKey::AutocastPrivateUse1:
+      return "AutocastPrivateUse1";
 
     case DispatchKey::FuncTorchBatched:
       return "FuncTorchBatched";
+    case DispatchKey::BatchedNestedTensor:
+      return "BatchedNestedTensor";
     case DispatchKey::FuncTorchVmapMode:
       return "FuncTorchVmapMode";
 
@@ -173,6 +185,9 @@ const char* toString(DispatchKey t) {
 
     case DispatchKey::TESTING_ONLY_GenericMode:
       return "TESTING_ONLY_GenericMode";
+
+    case DispatchKey::PreDispatch:
+      return "PreDispatch";
 
     case DispatchKey::PythonDispatcher:
       return "PythonDispatcher";
@@ -279,9 +294,13 @@ c10::DispatchKey parseDispatchKey(const std::string& k) {
       {"Tracer", c10::DispatchKey::Tracer},
       {"AutocastCPU", c10::DispatchKey::AutocastCPU},
       {"AutocastXPU", c10::DispatchKey::AutocastXPU},
+      {"AutocastIPU", c10::DispatchKey::AutocastIPU},
       {"AutocastHPU", c10::DispatchKey::AutocastHPU},
       {"AutocastCUDA", c10::DispatchKey::AutocastCUDA},
+      {"AutocastXLA", c10::DispatchKey::AutocastXLA},
+      {"AutocastPrivateUse1", c10::DispatchKey::AutocastPrivateUse1},
       {"FuncTorchBatched", c10::DispatchKey::FuncTorchBatched},
+      {"BatchedNestedTensor", c10::DispatchKey::BatchedNestedTensor},
       {"FuncTorchVmapMode", c10::DispatchKey::FuncTorchVmapMode},
       {"Batched", c10::DispatchKey::Batched},
       {"VmapMode", c10::DispatchKey::VmapMode},
@@ -293,6 +312,7 @@ c10::DispatchKey parseDispatchKey(const std::string& k) {
        c10::DispatchKey::TESTING_ONLY_GenericWrapper},
       {"TESTING_ONLY_GenericMode", c10::DispatchKey::TESTING_ONLY_GenericMode},
       {"PythonDispatcher", c10::DispatchKey::PythonDispatcher},
+      {"PreDispatch", c10::DispatchKey::PreDispatch},
 
       {"CPU", c10::DispatchKey::CPU},
       {"CUDA", c10::DispatchKey::CUDA},
@@ -303,9 +323,12 @@ c10::DispatchKey parseDispatchKey(const std::string& k) {
       {"IPU", c10::DispatchKey::IPU},
       {"HPU", c10::DispatchKey::HPU},
       {"Lazy", c10::DispatchKey::Lazy},
+      {"MTIA", c10::DispatchKey::MTIA},
       {"NestedTensor", c10::DispatchKey::NestedTensor},
       {"NestedTensorCPU", c10::DispatchKey::NestedTensorCPU},
       {"NestedTensorCUDA", c10::DispatchKey::NestedTensorCUDA},
+      {"NestedTensorMeta", c10::DispatchKey::NestedTensorMeta},
+      {"NestedTensorPrivateUse1", c10::DispatchKey::NestedTensorPrivateUse1},
       {"PrivateUse1", c10::DispatchKey::PrivateUse1},
       {"PrivateUse2", c10::DispatchKey::PrivateUse2},
       {"PrivateUse3", c10::DispatchKey::PrivateUse3},
@@ -313,6 +336,7 @@ c10::DispatchKey parseDispatchKey(const std::string& k) {
       {"QuantizedCPU", c10::DispatchKey::QuantizedCPU},
       {"QuantizedCUDA", c10::DispatchKey::QuantizedCUDA},
       {"QuantizedXPU", c10::DispatchKey::QuantizedXPU},
+      {"QuantizedPrivateUse1", c10::DispatchKey::QuantizedPrivateUse1},
 
       {"SparseCPU", c10::DispatchKey::SparseCPU},
       {"SparseCUDA", c10::DispatchKey::SparseCUDA},
@@ -320,6 +344,7 @@ c10::DispatchKey parseDispatchKey(const std::string& k) {
       {"SparseXPU", c10::DispatchKey::SparseXPU},
       {"SparseVE", c10::DispatchKey::SparseVE},
       {"SparseMeta", c10::DispatchKey::SparseMeta},
+      {"SparsePrivateUse1", c10::DispatchKey::SparsePrivateUse1},
 
       {"AutogradCPU", c10::DispatchKey::AutogradCPU},
       {"AutogradCUDA", c10::DispatchKey::AutogradCUDA},

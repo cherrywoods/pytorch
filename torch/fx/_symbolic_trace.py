@@ -86,7 +86,7 @@ class ProxyableClassMeta(type):
             return mul
         '''
 
-    From this example, we can see that contruction of a class (``TensorPair``)
+    From this example, we can see that construction of a class (``TensorPair``)
     defined with ``ProxyableClassMeta`` as metaclass can be recorded in symbolic
     tracing.
     """
@@ -119,7 +119,29 @@ def _patch_function(fn: FunctionType, nargs: int) -> FunctionType:
     co = fn.__code__
     co_flags = co.co_flags & ~HAS_VARSTUFF
     co_args: tuple
-    if hasattr(co, "co_posonlyargcount"):
+    if hasattr(co, "co_qualname"):
+        # Python-3.11+ code signature
+        co_args = (
+            nargs,
+            0,
+            0,
+            co.co_nlocals,
+            co.co_stacksize,
+            co_flags,
+            co.co_code,
+            co.co_consts,
+            co.co_names,
+            co.co_varnames,
+            co.co_filename,
+            co.co_name,
+            co.co_qualname,  # type: ignore[attr-defined]
+            co.co_firstlineno,
+            co.co_lnotab,
+            co.co_exceptiontable,  # type: ignore[attr-defined]
+            co.co_freevars,
+            co.co_cellvars,
+        )
+    elif hasattr(co, "co_posonlyargcount"):
         co_args = (
             nargs,
             0,
@@ -167,7 +189,7 @@ def _patch_function(fn: FunctionType, nargs: int) -> FunctionType:
 
 
 @compatibility(is_backward_compatible=False)
-class PHBase(object):
+class PHBase:
     """
     Object representing an input placeholder to `concrete_args`
     """
@@ -177,6 +199,18 @@ class PHBase(object):
 
 
 PH = PHBase()
+
+
+@compatibility(is_backward_compatible=False)
+class PHWithMeta(PHBase):
+    """
+    Object representing an input placeholder to `concrete_args`
+    """
+    def __init__(self, ph_key: Optional[str] = None):
+        super().__init__()
+
+        # Provide a hey for user to identify placeholder node during analysis
+        self.ph_key = ph_key
 
 
 @compatibility(is_backward_compatible=True)
@@ -221,14 +255,14 @@ class Tracer(TracerBase):
                 without needing to use fx.wrap(). Backward-compatibility for
                 this parameter is guaranteed.
 
-            autowrap_function (Tuple[Callable, ...]): defaults to `()`,
+            autowrap_functions (Tuple[Callable, ...]): defaults to `()`,
                 Python functions that should be wrapped automatically without
-                needing to use fx.wrap(). Backward compabilibility for this
+                needing to use fx.wrap(). Backward compatibility for this
                 parameter is guaranteed.
 
             param_shapes_constant (bool): When this flag is set,  calls to shape,
                 size and a few other shape like attributes of a module's parameter
-                will be evaluted directly, rather than returning a new Proxy value
+                will be evaluated directly, rather than returning a new Proxy value
                 for an attribute access. Backward compatibility for this parameter
                 is guaranteed.
         """
@@ -242,7 +276,7 @@ class Tracer(TracerBase):
             for name, value in chain(*[m.__dict__.items() for m in autowrap_modules])
             if not name.startswith("_") and callable(value)
         }
-        self._autowrap_function_ids.update(set([id(f) for f in autowrap_functions]))
+        self._autowrap_function_ids.update({id(f) for f in autowrap_functions})
 
         # Python modules to apply autowrap to at the start, in addition to
         # modules we see while tracing
@@ -440,7 +474,7 @@ class Tracer(TracerBase):
         with ScopeContextManager(self.scope, Scope(module_qualified_name, type(m))) as _scope:
             # module_stack is an ordered dict so writing then deleting the
             # entry is equivalent to push/pop on a list
-            self.module_stack[_scope.module_path] = str(_scope.module_type)
+            self.module_stack[_scope.module_path] = _scope.module_type
             if not self.is_leaf_module(m, module_qualified_name):
                 ret_val = forward(*args, **kwargs)
             else:
@@ -467,7 +501,7 @@ class Tracer(TracerBase):
 
             attr (str): The name of the attribute being queried
             attr_val (Any): The value of the attribute
-            parametr_proxy_cache (Dict[str, Any]): A cache of attr names to proxies
+            parameter_proxy_cache (Dict[str, Any]): A cache of attr names to proxies
 
         Return:
 
@@ -558,7 +592,27 @@ class Tracer(TracerBase):
                     out = self.create_proxy(
                         "placeholder", f"{name}_{str(cnt)}", default, {}
                     )
-                    if x == PH:
+                    if isinstance(x, PHBase):
+                        def transfer_attrs(fr, to):
+                            for attr_name in dir(fr):
+                                attr_val = getattr(fr, attr_name)
+                                if (
+                                    not callable(attr_val)
+                                    and not attr_name.startswith("__")
+                                    and not hasattr(to, attr_name)
+                                ):
+                                    setattr(to, attr_name, attr_val)
+
+                        if x != PH:
+                            # Transfer attrs in the case where you're using a placeholder other
+                            # than the singleton PH (PH has no attributes to transfer).
+                            # Proxies were created out of the placeholders.
+                            # Transfer any metadata (put on the placeholders in the form of
+                            # attributes set by the user) from the placeholder to the
+                            # underlying nodes (the proxy is unwrapped by the user, but
+                            # the metadata should hold).
+                            transfer_attrs(fr=x, to=out.node)
+
                         return out
                     # Union[int, bool] == bool in Python <= 3.6
                     if (
@@ -605,7 +659,7 @@ class Tracer(TracerBase):
                 raise RuntimeError(
                     f"Tracing expected {len(arg_names)} arguments but got {len(concrete_args)} concrete arguments"
                 )
-            concrete_args = {name: val for name, val in zip(arg_names, concrete_args)}
+            concrete_args = dict(zip(arg_names, concrete_args))
         args.extend(proxy_placeholder(names) for names in arg_names)
 
         if co.co_kwonlyargcount > 0 or co.co_flags & HAS_VARSTUFF:
@@ -685,8 +739,15 @@ class Tracer(TracerBase):
                 self.root = torch.nn.Module()
                 fn = root
 
-            tracer_cls: Optional[Type["Tracer"]] = getattr(self, "__class__", None)
+            tracer_cls: Optional[Type[Tracer]] = getattr(self, "__class__", None)
             self.graph = Graph(tracer_cls=tracer_cls)
+            if hasattr(fn, '__code__'):
+                code = fn.__code__
+                self.graph._co_fields = {
+                    'co_name': code.co_name,
+                    'co_filename': code.co_filename,
+                    'co_firstlineno': code.co_firstlineno,
+                }
 
             # When we encounter a Tensor value that's not a parameter, we look if it
             # is some other attribute on the model. Construct a dict mapping Tensor
@@ -778,9 +839,11 @@ class Tracer(TracerBase):
         return new_tracer
 
 
-# List of pairs of (global dict, function name) functions
-# to patch for the purposes of the wrap() API.
-_wrapped_fns_to_patch: List[Tuple[dict, str]] = []
+# Dictionary of (id(globals dict), function name) => globals_dict to patch for
+# the purposes of the wrap() API.
+# We key by the globals dict id and function name to ensure we're wrapping a given
+# function only once.
+_wrapped_fns_to_patch: Dict[Tuple[int, str], dict] = {}
 
 # List of methods on classes to wrap (class type, function name)
 # this currently only works for Tensor.* methods that aren't traced properly
@@ -875,9 +938,9 @@ class _PatchedFnSetAttr(_PatchedFn):
         setattr(self.frame_dict, self.fn_name, self.orig_fn)
 
 
-class _Patcher(object):
+class _Patcher:
     def __init__(self):
-        super(_Patcher, self).__init__()
+        super().__init__()
         self.patches_made: List[_PatchedFn] = []
         self.visited: Set[int] = set()
 
@@ -941,7 +1004,7 @@ def _patch_wrapped_functions(patcher: _Patcher):
     Go through ``_wrapped_fn_patch_table`` and, for each frame object, wrap
     the listed global functions in the `_create_wrapped_func` wrapper.
     """
-    for frame_dict, name in _wrapped_fns_to_patch:
+    for (_, name), frame_dict in _wrapped_fns_to_patch.items():
         if name not in frame_dict and hasattr(builtins, name):
             orig_fn = getattr(builtins, name)
         else:
@@ -1027,7 +1090,7 @@ def wrap(fn_or_name: Union[str, Callable]):
 
     # consider implementing Callable version of this via _autowrap_function_ids / _autowrap_search
     # semantics would be slightly different, but would add support `from x import wrapped_function`
-    _wrapped_fns_to_patch.append((f.f_globals, fn_name))
+    _wrapped_fns_to_patch[(id(f.f_globals), fn_name)] = f.f_globals
     return fn_or_name
 
 
@@ -1054,7 +1117,7 @@ def symbolic_trace(
 
     FX can typically not trace through this due to the presence of control
     flow. However, we can use `concrete_args` to specialize on the value of
-    `b` to trace through this.
+    `b` to trace through this::
 
         f = fx.symbolic_trace(f, concrete_args={'b': False})
         assert f(3, False)  == 6

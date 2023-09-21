@@ -18,10 +18,12 @@ from .observer import (
 from .qconfig import (
     default_reuse_input_qconfig,
     default_symmetric_qnnpack_qconfig,
+    default_symmetric_qnnpack_qat_qconfig,
     get_default_qconfig,
     get_default_qat_qconfig,
     QConfig,
-    QConfigAny
+    QConfigAny,
+    default_quint8_weight_qconfig
 )
 
 
@@ -83,28 +85,15 @@ def _get_default_qconfig_mapping(is_qat: bool, backend: str, version: int) -> QC
     qconfig_mapping = QConfigMapping() \
         .set_global(qconfig) \
         .set_object_type("reshape", default_reuse_input_qconfig) \
-        .set_object_type(torch.nn.Conv1d, qconfig) \
-        .set_object_type(torch.nn.Conv2d, qconfig) \
-        .set_object_type(torch.nn.Conv3d, qconfig) \
         .set_object_type(torch.nn.ConvTranspose1d, qconfig_transpose) \
         .set_object_type(torch.nn.ConvTranspose2d, qconfig_transpose) \
         .set_object_type(torch.nn.ConvTranspose3d, qconfig_transpose) \
-        .set_object_type(torch.nn.Linear, qconfig) \
-        .set_object_type(torch.nn.functional.conv1d, qconfig) \
-        .set_object_type(torch.nn.functional.conv2d, qconfig) \
-        .set_object_type(torch.nn.functional.conv3d, qconfig) \
         .set_object_type(torch.nn.functional.conv_transpose1d, qconfig_transpose) \
         .set_object_type(torch.nn.functional.conv_transpose2d, qconfig_transpose) \
         .set_object_type(torch.nn.functional.conv_transpose3d, qconfig_transpose) \
-        .set_object_type(torch.nn.functional.linear, qconfig) \
-        .set_object_type(torch.nn.ReLU, qconfig) \
-        .set_object_type(torch.nn.functional.relu, qconfig) \
-        .set_object_type(torch.relu, qconfig) \
-        .set_object_type(torch.nn.BatchNorm1d, qconfig) \
-        .set_object_type(torch.nn.BatchNorm2d, qconfig) \
-        .set_object_type(torch.nn.BatchNorm3d, qconfig) \
         .set_object_type(torch.nn.functional.layer_norm, qconfig_layernorm) \
         .set_object_type(torch.nn.LayerNorm, qconfig_layernorm) \
+        .set_object_type(torch.nn.PReLU, default_quint8_weight_qconfig) \
 
     # Use special observers for ops with fixed qparams
     fixed_qparams_observer_to_qconfig: Dict[Any, QConfigAny] = {}
@@ -119,6 +108,9 @@ def _get_default_qconfig_mapping(is_qat: bool, backend: str, version: int) -> QC
             fixed_qparams_qconfig = QConfig(activation=activation, weight=default_weight)
             fixed_qparams_observer_to_qconfig[observer] = fixed_qparams_qconfig
         qconfig_mapping.set_object_type(fixed_qparams_op, fixed_qparams_qconfig)
+
+    # TODO Currently it's required that separate ops in a fused op/module have the same qconfig.
+    #      Need to be able to support fusion of ops with different qconfigs
 
     return qconfig_mapping
 
@@ -145,16 +137,38 @@ def get_default_qat_qconfig_mapping(backend="x86", version=1) -> QConfigMapping:
     """
     return _get_default_qconfig_mapping(True, backend, version)
 
-def _get_symmetric_qnnpack_qconfig_mapping():
+def _get_symmetric_qnnpack_qconfig_mapping() -> QConfigMapping:
     """
     Return a QConfigMapping that uses `torch.ao.quantization.default_symmetric_qnnpack_qconfig`
     as the default QConfig.
     """
-    qconfig_mapping = get_default_qconfig_mapping("qnnpack") \
-        .set_global(default_symmetric_qnnpack_qconfig)
+    default_qconfig = default_symmetric_qnnpack_qconfig
+    return _get_default_qconfig_mapping_with_default_qconfig(False, "qnnpack", default_qconfig)
+
+def _get_symmetric_qnnpack_qat_qconfig_mapping() -> QConfigMapping:
+    """
+    Return a QConfigMapping that uses `torch.ao.quantization.default_symmetric_qnnpack_qat_qconfig`
+    as the default QConfig.
+    """
+    default_qconfig = default_symmetric_qnnpack_qat_qconfig
+    return _get_default_qconfig_mapping_with_default_qconfig(True, "qnnpack", default_qconfig)
+
+def _get_default_qconfig_mapping_with_default_qconfig(
+    is_qat: bool,
+    backend: str,
+    default_qconfig: QConfig,
+) -> QConfigMapping:
+    """
+    Return a QConfigMapping that uses the provided qconfig as the default QConfig.
+    """
+    if is_qat:
+        qconfig_mapping = get_default_qat_qconfig_mapping(backend)
+    else:
+        qconfig_mapping = get_default_qconfig_mapping(backend)
+    qconfig_mapping.set_global(default_qconfig)
     for pattern in qconfig_mapping.object_type_qconfigs.keys():
         if pattern not in _FIXED_QPARAMS_OP_TO_OBSERVER:
-            qconfig_mapping.set_object_type(pattern, default_symmetric_qnnpack_qconfig)
+            qconfig_mapping.set_object_type(pattern, default_qconfig)
     return qconfig_mapping
 
 _QCONFIG_STYLE_ORDER: List[str] = [

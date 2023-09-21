@@ -97,6 +97,46 @@ bool softAssertRaises() {
   return soft_assert_raises_.value_or(false);
 }
 
+void logSoftAssert(
+    const char* func,
+    const char* file,
+    uint32_t line,
+    const char* cond,
+    const char* args) {
+#ifdef USE_KINETO
+  std::string error;
+  error = fmt::format(
+      "{} SOFT ASSERT FAILED at {}:{}, func: {}, args: {}",
+      cond,
+      file,
+      line,
+      func,
+      args);
+  // TODO: Implement profile_id and group_profile_id as 3rd/4th arguments.
+  kineto::logInvariantViolation(cond, error, "", "");
+#endif
+}
+
+void logSoftAssert(
+    const char* func,
+    const char* file,
+    uint32_t line,
+    const char* cond,
+    const std::string& args) {
+#ifdef USE_KINETO
+  std::string error;
+  error = fmt::format(
+      "{} SOFT ASSERT FAILED at {}:{}, func: {}, args: {}",
+      cond,
+      file,
+      line,
+      func,
+      args);
+  // TODO: Implement profile_id and group_profile_id as 3rd/4th arguments.
+  kineto::logInvariantViolation(cond, error, "", "");
+#endif
+}
+
 // ----------------------------------------------------------------------------
 // -- NVTX --------------------------------------------------------------------
 // ----------------------------------------------------------------------------
@@ -106,7 +146,7 @@ std::string getNvtxStr(
     const std::vector<std::vector<int64_t>>& shapes,
     at::RecordFunctionHandle op_id,
     const std::list<std::pair<at::RecordFunctionHandle, int>>& input_op_ids) {
-  if (sequence_nr >= -1 || shapes.size() > 0) {
+  if (sequence_nr >= -1 || !shapes.empty()) {
     std::string str;
     if (sequence_nr >= 0) {
       str = fmt::format("{}, seq = {}", name, sequence_nr);
@@ -121,12 +161,12 @@ std::string getNvtxStr(
     if (op_id > 0) {
       str = fmt::format("{}, op_id = {}", str, op_id);
     }
-    if (shapes.size() > 0) {
+    if (!shapes.empty()) {
       str = fmt::format("{}, sizes = {}", str, shapesToStr(shapes));
     }
     // Include the op ids of the input edges so
     // you can build the network graph
-    if (input_op_ids.size() > 0) {
+    if (!input_op_ids.empty()) {
       str = fmt::format(
           "{}, input_op_ids = {}", str, inputOpIdsToStr(input_op_ids));
     }
@@ -188,9 +228,8 @@ std::string stacksToStr(
   return "\"" + rc + "\"";
 }
 
-std::vector<std::vector<int64_t>> flattenList(
-    c10::List<c10::IValue> list,
-    std::string fn_name) {
+static std::vector<std::vector<int64_t>> flattenList(
+    const c10::List<c10::IValue>& list) {
   std::vector<std::vector<int64_t>> tensor_dims;
   for (const c10::IValue& input : list) {
     if (input.isTensor()) {
@@ -219,7 +258,7 @@ std::vector<std::vector<int64_t>> inputSizes(
     } else if (input.isList()) {
       std::vector<std::vector<int64_t>> tmp_sizes;
       if (flatten_list_enabled) {
-        tmp_sizes = flattenList(input.toList(), std::string(fn.name()));
+        tmp_sizes = flattenList(input.toList());
       }
       // Extend the current sizes array by the array returned from input sizes
       if (!tmp_sizes.empty()) {
@@ -270,7 +309,7 @@ std::string inputOpIdsToStr(
   return str;
 }
 
-std::string dtypesToStr(const std::vector<std::string>& types) {
+std::string strListToStr(const std::vector<std::string>& types) {
   if (types.empty()) {
     return "[]";
   } else {
@@ -279,11 +318,26 @@ std::string dtypesToStr(const std::vector<std::string>& types) {
         types.begin(),
         types.end(),
         std::ostream_iterator<std::string>(oss, ", "),
-        [](std::string s) -> std::string { return "\"" + s + "\""; });
+        [](const std::string& s) -> std::string { return "\"" + s + "\""; });
     auto rc = oss.str();
     rc.erase(rc.length() - 2); // remove last ", "
     return "[" + rc + "]";
   }
+}
+
+std::string ivalueListToStr(const std::vector<c10::IValue>& list) {
+  std::vector<std::string> concrete_str_inputs;
+  std::stringstream ss;
+  for (const auto& val : list) {
+    if (val.isNone()) {
+      concrete_str_inputs.emplace_back("");
+    } else {
+      ss.str("");
+      ss << val;
+      concrete_str_inputs.emplace_back(ss.str());
+    }
+  }
+  return strListToStr(concrete_str_inputs);
 }
 
 std::vector<std::string> inputTypes(const at::RecordFunction& fn) {
@@ -557,7 +611,7 @@ uint64_t computeFlops(
 
     const auto mat1_size = mat1_sizes_ref.toDimVector();
     const auto mat2_size = mat2_sizes_ref.toDimVector();
-    if (mat1_size.size() == 0) {
+    if (mat1_size.empty()) {
       return 0;
     }
 
@@ -598,7 +652,7 @@ uint64_t computeFlops(
 
     const auto mat1_size = mat1_sizes_ref.toDimVector();
     const auto mat2_size = mat2_sizes_ref.toDimVector();
-    if (mat1_size.size() == 0) {
+    if (mat1_size.empty()) {
       return 0;
     }
 

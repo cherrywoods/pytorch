@@ -30,6 +30,7 @@ namespace impl {
 enum class EventType : uint8_t {
   TorchOp = 0,
   Backend,
+  Vulkan,
   Allocation,
   OutOfMemory,
   PyCall,
@@ -67,8 +68,8 @@ struct TORCH_API RawTensorMetadata : RawTensorMetadataBase {
 struct TORCH_API TensorMetadata : public RawTensorMetadataBase {
   TensorMetadata(
       const RawTensorMetadata& r,
-      const std::vector<int64_t>& sizes,
-      const std::vector<int64_t>& strides);
+      std::vector<int64_t> sizes,
+      std::vector<int64_t> strides);
 
   TensorImplAddress impl() const {
     return weak_self_.get();
@@ -99,11 +100,11 @@ struct ExtraFields;
 struct Result;
 
 struct TorchOpBasicFields {
-  int64_t sequence_number_;
-  uint64_t forward_tid_;
-  at::RecordScope scope_;
-  bool is_async_;
-  int64_t debug_handle_;
+  int64_t sequence_number_{0};
+  uint64_t forward_tid_{0};
+  at::RecordScope scope_{};
+  bool is_async_{false};
+  int64_t debug_handle_{0};
   std::string name_;
 
   // Set in the exit callback.
@@ -115,8 +116,8 @@ using jit_modules_t = std::vector<std::string>;
 using extra_args_t = std::unordered_map<std::string, c10::IValue>;
 
 struct FallbackPair {
-  ProfilerEventStub cuda_event_start_ = nullptr;
-  ProfilerEventStub cuda_event_end_ = nullptr;
+  ProfilerVoidEventStub device_event_start_ = nullptr;
+  ProfilerVoidEventStub device_event_end_ = nullptr;
 };
 
 template <>
@@ -126,29 +127,32 @@ struct ExtraFields<EventType::TorchOp> : TorchOpBasicFields {
       uint64_t correlation_id,
       time_t end_time_ns,
       std::vector<op_input_t>&& inputs,
+      std::vector<op_input_t>&& concrete_inputs,
       jit_stack_t&& jit_stack,
       jit_modules_t&& jit_modules,
       extra_args_t&& extra_args,
-      FallbackPair&& gpu_fallback,
+      FallbackPair&& device_fallback,
       bool allow_tf32_cublas,
       std::unique_ptr<perf_counters_t>&& perf_event_counters)
       : TorchOpBasicFields(std::move(f)),
         correlation_id_{correlation_id},
         end_time_ns_{end_time_ns},
         inputs_{std::move(inputs)},
+        concrete_inputs_{std::move(concrete_inputs)},
         jit_stack_{std::move(jit_stack)},
         jit_modules_{std::move(jit_modules)},
         extra_args_{std::move(extra_args)},
-        gpu_fallback_{std::move(gpu_fallback)},
+        device_fallback_{std::move(device_fallback)},
         allow_tf32_cublas_{allow_tf32_cublas},
         perf_event_counters_{std::move(perf_event_counters)} {}
   uint64_t correlation_id_;
   time_t end_time_ns_;
   std::vector<op_input_t> inputs_;
+  std::vector<op_input_t> concrete_inputs_;
   jit_stack_t jit_stack_;
   jit_modules_t jit_modules_;
   extra_args_t extra_args_;
-  FallbackPair gpu_fallback_;
+  FallbackPair device_fallback_;
   bool allow_tf32_cublas_;
   std::unique_ptr<perf_counters_t> perf_event_counters_;
 };
@@ -165,20 +169,28 @@ struct ExtraFields<EventType::Backend> {
   jit_modules_t jit_modules_;
 };
 
+template <>
+struct ExtraFields<EventType::Vulkan> {
+  using raw_event_t = std::pair<approx_time_t, vulkan_id_t>;
+  std::string name_;
+  int64_t duration_ns_{0};
+  // While building the event tree, we want to report a vulkan event's duration
+  // as 0 so that its end time doesn't exceed that of its parent cpu op
+  bool in_tree_building_{false};
+};
+
 struct RawAllocation {
   torch::profiler::impl::approx_time_t start_time_;
   void* ptr_;
   int64_t alloc_size_;
-  int64_t total_allocated_;
-  int64_t total_reserved_;
+  size_t total_allocated_;
+  size_t total_reserved_;
   c10::DeviceType device_type_;
   c10::DeviceIndex device_index_;
 };
 
 // For performance.
-static_assert(
-    std::is_pod<RawAllocation>::value,
-    "Non-POD member of RawAllocation.");
+static_assert(c10::is_pod_v<RawAllocation>, "Non-POD member of RawAllocation.");
 
 template <>
 struct ExtraFields<EventType::Allocation> : RawAllocation {
@@ -196,15 +208,15 @@ template <>
 struct ExtraFields<EventType::OutOfMemory> {
   torch::profiler::impl::approx_time_t start_time_;
   int64_t alloc_size_;
-  int64_t total_allocated_;
-  int64_t total_reserved_;
+  size_t total_allocated_;
+  size_t total_reserved_;
   c10::DeviceType device_type_;
   c10::DeviceIndex device_index_;
 };
 
 // For performance.
 static_assert(
-    std::is_pod<ExtraFields<EventType::OutOfMemory>>::value,
+    c10::is_pod_v<ExtraFields<EventType::OutOfMemory>>,
     "Non-POD member of ExtraFields<EventType::OutOfMemory>.");
 
 struct PyFrameState {
@@ -255,7 +267,9 @@ struct OptimizerInfo {
 
 struct PyExtraFieldsBase {
   PyExtraFieldsBase(time_t end_time_ns, size_t python_tid, PyFrameState caller)
-      : end_time_ns_{end_time_ns}, python_tid_{python_tid}, caller_{caller} {}
+      : end_time_ns_{end_time_ns},
+        python_tid_{python_tid},
+        caller_{std::move(caller)} {}
 
   time_t end_time_ns_;
   size_t python_tid_;
@@ -298,7 +312,7 @@ struct ExtraFields<EventType::PyCCall> : public PyExtraFieldsBase {
       PyFrameState caller,
       args_t args)
       : PyExtraFieldsBase(end_time_ns, python_tid, caller),
-        function_name_{args} {}
+        function_name_{std::move(args)} {}
 
   at::StringView function_name_;
 };
@@ -316,8 +330,8 @@ struct ExtraFields<EventType::Kineto> {
   };
 
   std::string name_;
-  int64_t duration_us_;
-  uint64_t correlation_id_;
+  int64_t duration_us_{0};
+  uint64_t correlation_id_{0};
   libkineto::ActivityType activity_type_;
   Flow flow;
   std::weak_ptr<Result> linked_activity_{};
@@ -345,8 +359,9 @@ struct TORCH_API Result : public std::enable_shared_from_this<Result> {
       using extra_fields_t = typename std::remove_cv<
           typename std::remove_reference<decltype(extra_fields)>::type>::type;
 
-      c10::guts::if_constexpr<std::is_base_of<T, extra_fields_t>::value>(
-          [&](auto _) { fn(_(extra_fields)); });
+      if constexpr (std::is_base_of_v<T, extra_fields_t>) {
+        fn(extra_fields);
+      }
     });
   }
 
@@ -367,6 +382,7 @@ struct TORCH_API Result : public std::enable_shared_from_this<Result> {
   c10::variant<
       ExtraFields<EventType::TorchOp>,
       ExtraFields<EventType::Backend>,
+      ExtraFields<EventType::Vulkan>,
       ExtraFields<EventType::Allocation>,
       ExtraFields<EventType::OutOfMemory>,
       ExtraFields<EventType::PyCall>,
@@ -418,30 +434,50 @@ struct KinetoObserverContext : public at::ObserverContext {
 
 constexpr int IO_ENCODER_DEFAULT_BLOCK_SIZE = 1024;
 
+constexpr int SCALAR_LIST_LENGTH_LIMIT = 30;
+
 // InputOutputEncoder
-// Stores each op_events' shapes and dtypes into a contiguous AppendOnlyList
-// so that we no longer create vectors for shapes and dtypes on every op.
-// Those vectors can be created during post-processing.
+// Stores each op_events' shapes and dtypes, and concrete values into a
+// contiguous AppendOnlyList so that we no longer create vectors for shapes
+// and dtypes on every op. Those vectors can be created during
+// post-processing.
+// It splits the data into two categories: input shapes and concrete inputs.
 class InputOutputEncoder final {
  public:
   void push(c10::ArrayRef<const c10::IValue> values);
 
-  // Used during post-processing to create vectors for shapes and dtype.
-  auto getNextShapesAndDtypes();
+  // Used during post-processing to unpack the encoded data.
+  // Each method returns a "supplier" lambda which takes no arguments;
+  // invoking the lambda once will return a list of args that represent
+  // the inputs for one op.
+  // The data is split into two streams: "input shapes" and "concrete inputs".
+  // Note: "auto" only works because these are only used in collection.cpp,
+  // where they are implemented.
+  auto getInputShapeGenerator();
+  auto getConcreteInputGenerator();
+
+  bool isSupportedScalarList(const c10::IValue& list_candidate);
 
   void clear();
 
- private:
   enum class Tag {
     Tensor = 0,
     UndefinedTensor,
     TensorListBegin, // TODO: generalize to other lists.
+    ScalarList,
     Scalar,
     Other,
     TERMINATOR
   };
 
+  enum class IOType { Shapes, ConcreteInputs, None };
+
+ private:
   void push(const at::Tensor& t);
+
+  // Implementation detail for getInputShapeGenerator and
+  // getConcreteInputGenerator
+  auto getIValueGenerator(const IOType& io_type);
 
   AppendOnlyList<Tag, IO_ENCODER_DEFAULT_BLOCK_SIZE> tags_;
   AppendOnlyList<RawTensorMetadata, IO_ENCODER_DEFAULT_BLOCK_SIZE>
@@ -461,6 +497,11 @@ class TORCH_API ThreadLocalSubqueue {
   template <class... Args>
   void emplace_backend_event(Args&&... args) {
     backend_events_.emplace_back(std::forward<Args>(args)...);
+  }
+
+  template <class... Args>
+  void emplace_vulkan_event(Args&&... args) {
+    vulkan_events_.emplace_back(std::forward<Args>(args)...);
   }
 
   template <class... Args>
@@ -504,7 +545,7 @@ class TORCH_API ThreadLocalSubqueue {
     // NB: This is a destructive operation.
     void materialize(
         std::vector<std::shared_ptr<Result>>& out,
-        const std::function<time_t(approx_time_t)> time_converter,
+        const std::function<time_t(approx_time_t)>& time_converter,
         const uint64_t tid,
         const kineto::DeviceAndResource& kineto_info);
 
@@ -538,12 +579,17 @@ class TORCH_API ThreadLocalSubqueue {
     // with_flops
     AppendOnlyList<extra_args_t, BlockSize> extra_args_;
 
-    // ProfilerState::KINETO_GPU_FALLBACK
-    AppendOnlyList<FallbackPair, BlockSize> gpu_fallback_;
+    // ProfilerState::KINETO_GPU_FALLBACK or
+    // ProfilerState::KINETO_PRIVATEUSE1_FALLBACK
+    AppendOnlyList<FallbackPair, BlockSize> device_fallback_;
   } torch_ops_;
 
   // reportBackendEventToActiveKinetoProfiler
   AppendOnlyList<ExtraFields<EventType::Backend>, BlockSize> backend_events_;
+
+  // _reportVulkanEventToProfiler
+  AppendOnlyList<ExtraFields<EventType::Vulkan>::raw_event_t, BlockSize>
+      vulkan_events_;
 
   // reportMemoryUsage
   AppendOnlyList<RawAllocation, BlockSize> allocations_;
@@ -582,6 +628,18 @@ class TORCH_API RecordQueue {
   std::mutex sub_queue_mutex_;
   std::unique_ptr<python_tracer::PythonTracerBase> python_tracer_;
 };
+
+TORCH_API bool get_record_concrete_inputs_enabled();
+TORCH_API void set_record_concrete_inputs_enabled_fn(std::function<bool()>);
+TORCH_API void set_record_concrete_inputs_enabled_val(bool);
+
+TORCH_API bool get_fwd_bwd_enabled();
+TORCH_API void set_fwd_bwd_enabled_fn(std::function<bool()>);
+TORCH_API void set_fwd_bwd_enabled_val(bool);
+
+TORCH_API bool get_cuda_sync_enabled();
+TORCH_API void set_cuda_sync_enabled_fn(std::function<bool()>);
+TORCH_API void set_cuda_sync_enabled_val(bool);
 
 } // namespace impl
 } // namespace profiler

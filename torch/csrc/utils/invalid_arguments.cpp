@@ -109,7 +109,7 @@ struct Option {
   Option(bool is_variadic, bool has_out)
       : arguments(), is_variadic(is_variadic), has_out(has_out){};
   Option(const Option&) = delete;
-  Option(Option&& other)
+  Option(Option&& other) noexcept
       : arguments(std::move(other.arguments)),
         is_variadic(other.is_variadic),
         has_out(other.has_out){};
@@ -124,8 +124,7 @@ std::vector<std::string> _splitString(
     const std::string& delim) {
   std::vector<std::string> tokens;
   size_t start = 0;
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  size_t end;
+  size_t end = 0;
   while ((end = s.find(delim, start)) != std::string::npos) {
     tokens.push_back(s.substr(start, end - start));
     start = end + delim.length();
@@ -308,7 +307,7 @@ std::string _formattedArgDesc(
       result += reset_red;
     result += ", ";
   }
-  if (arguments.size() > 0)
+  if (!arguments.empty())
     result.erase(result.length() - 2);
   result += ")";
   return result;
@@ -322,7 +321,7 @@ std::string _argDesc(
     result += std::string(py_typename(arg)) + ", ";
   for (auto& kwarg : kwargs)
     result += kwarg.first + "=" + py_typename(kwarg.second) + ", ";
-  if (arguments.size() > 0)
+  if (!arguments.empty())
     result.erase(result.length() - 2);
   result += ")";
   return result;
@@ -374,8 +373,7 @@ std::string format_invalid_args(
 
   bool has_kwargs = given_kwargs && PyDict_Size(given_kwargs) > 0;
   if (has_kwargs) {
-    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-    PyObject *key, *value;
+    PyObject *key = nullptr, *value = nullptr;
     Py_ssize_t pos = 0;
 
     while (PyDict_Next(given_kwargs, &pos, &key, &value)) {
@@ -390,7 +388,7 @@ std::string format_invalid_args(
     std::vector<std::string> unmatched_kwargs;
     if (has_kwargs)
       unmatched_kwargs = _tryMatchKwargs(option, kwargs);
-    if (unmatched_kwargs.size()) {
+    if (!unmatched_kwargs.empty()) {
       error_msg += "got unrecognized keyword arguments: ";
       for (auto& kwarg : unmatched_kwargs)
         error_msg += kwarg + ", ";
@@ -420,7 +418,7 @@ std::string format_invalid_args(
         std::vector<std::string> unmatched_kwargs;
         if (has_kwargs)
           unmatched_kwargs = _tryMatchKwargs(option, kwargs);
-        if (unmatched_kwargs.size() > 0) {
+        if (!unmatched_kwargs.empty()) {
           error_msg +=
               "      didn't match because some of the keywords were incorrect: ";
           for (auto& kwarg : unmatched_kwargs)

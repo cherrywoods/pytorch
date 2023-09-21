@@ -1,5 +1,5 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
-load("@//third_party:substitution.bzl", "template_rule")
+load("@pytorch//third_party:substitution.bzl", "template_rule")
 
 _DNNL_RUNTIME_OMP = {
     "#cmakedefine DNNL_CPU_THREADING_RUNTIME DNNL_RUNTIME_${DNNL_CPU_THREADING_RUNTIME}": "#define DNNL_CPU_THREADING_RUNTIME DNNL_RUNTIME_OMP",
@@ -12,6 +12,8 @@ _DNNL_RUNTIME_OMP = {
     "#cmakedefine DNNL_SYCL_HIP": "/* #undef DNNL_SYCL_HIP */",
     "#cmakedefine DNNL_ENABLE_STACK_CHECKER": "#undef DNNL_ENABLE_STACK_CHECKER",
     "#cmakedefine DNNL_EXPERIMENTAL": "#undef DNNL_EXPERIMENTAL",
+    "#cmakedefine DNNL_EXPERIMENTAL_SPARSE": "#undef DNNL_EXPERIMENTAL_SPARSE",
+    "#cmakedefine ONEDNN_BUILD_GRAPH": "#undef ONEDNN_BUILD_GRAPH",
     "#cmakedefine01 BUILD_TRAINING": "#define BUILD_TRAINING 1",
     "#cmakedefine01 BUILD_INFERENCE": "#define BUILD_INFERENCE 0",
     "#cmakedefine01 BUILD_PRIMITIVE_ALL": "#define BUILD_PRIMITIVE_ALL 1",
@@ -49,47 +51,50 @@ _DNNL_RUNTIME_OMP = {
 }
 
 template_rule(
-    name = "third_party/oneDNN/include_dnnl_version",
-    src = "third_party/oneDNN/include/oneapi/dnnl/dnnl_version.h.in",
-    out = "third_party/oneDNN/include/oneapi/dnnl/dnnl_version.h",
+    name = "include_dnnl_version",
+    src = "include/oneapi/dnnl/dnnl_version.h.in",
+    out = "include/oneapi/dnnl/dnnl_version.h",
     substitutions = {
-        "@DNNL_VERSION_MAJOR@": "2",
-        "@DNNL_VERSION_MINOR@": "7",
-        "@DNNL_VERSION_PATCH@": "0",
-        "@DNNL_VERSION_HASH@": "650085b2f3643aad05c629425983491d63b5c289",
+        "@DNNL_VERSION_MAJOR@": "3",
+        "@DNNL_VERSION_MINOR@": "1",
+        "@DNNL_VERSION_PATCH@": "1",
+        "@DNNL_VERSION_HASH@": "64f6bcbcbab628e96f33a62c3e975f8535a7bde4",
     },
 )
 
 template_rule(
-    name = "third_party/oneDNN/include_dnnl_config",
-    src = "third_party/oneDNN/include/oneapi/dnnl/dnnl_config.h.in",
-    out = "third_party/oneDNN/include/oneapi/dnnl/dnnl_config.h",
+    name = "include_dnnl_config",
+    src = "include/oneapi/dnnl/dnnl_config.h.in",
+    out = "include/oneapi/dnnl/dnnl_config.h",
     substitutions = _DNNL_RUNTIME_OMP,
 )
 
 cc_library(
     name = "mkl-dnn",
     srcs = glob([
-        "third_party/oneDNN/src/common/*.cpp",
-        "third_party/oneDNN/src/cpu/**/*.cpp",
+        "src/common/*.cpp",
+        "src/cpu/**/*.cpp",
     ], exclude=[
-        "third_party/oneDNN/src/cpu/aarch64/**/*.cpp",
+        "src/cpu/aarch64/**/*.cpp",
+        "src/cpu/rv64/**/*.cpp",
     ]),
     hdrs = glob([
-        "third_party/oneDNN/include/oneapi/dnnl/*.h",
-        "third_party/oneDNN/include/oneapi/dnnl/*.hpp",
-        "third_party/oneDNN/include/*.h",
-        "third_party/oneDNN/include/*.hpp",
-        "third_party/oneDNN/src/cpu/**/*.hpp",
-        "third_party/oneDNN/src/cpu/**/*.h",
-        "third_party/oneDNN/src/common/*.hpp",
-        "third_party/oneDNN/src/common/ittnotify/jitprofiling.h",
+        "include/oneapi/dnnl/*.h",
+        "include/oneapi/dnnl/*.hpp",
+        "include/*.h",
+        "include/*.hpp",
+        "src/cpu/**/*.hpp",
+        "src/cpu/**/*.h",
+        "src/common/*.hpp",
+        "src/common/ittnotify/jitprofiling.h",
     ], exclude=[
-        "third_party/oneDNN/src/cpu/aarch64/**/*.hpp",
-        "third_party/oneDNN/src/cpu/aarch64/**/*.h",
+        "src/cpu/aarch64/**/*.hpp",
+        "src/cpu/aarch64/**/*.h",
+        "src/cpu/rv64/**/*.hpp",
+        "src/cpu/rv64/**/*.h",
     ]) + [
-        "third_party/oneDNN/include/oneapi/dnnl/dnnl_config.h",
-        "third_party/oneDNN/include/oneapi/dnnl/dnnl_version.h",
+        "include/oneapi/dnnl/dnnl_config.h",
+        "include/oneapi/dnnl/dnnl_version.h",
     ],
     copts = [
         "-DDNNL_DLL",
@@ -100,17 +105,17 @@ cc_library(
         "-fno-strict-overflow",
         "-fopenmp",
     ] + select({
-        "@//tools/config:thread_sanitizer": ["-DDNNL_CPU_RUNTIME=0"],
+        "@pytorch//tools/config:thread_sanitizer": ["-DDNNL_CPU_RUNTIME=0"],
         "//conditions:default": ["-DDNNL_CPU_RUNTIME=2"],
     }),
     includes = [
-        "third_party/oneDNN/include/",
-        "third_party/oneDNN/include/oneapi/",
-        "third_party/oneDNN/include/oneapi/dnnl/",
-        "third_party/oneDNN/src/",
-        "third_party/oneDNN/src/common/",
-        "third_party/oneDNN/src/cpu/",
-        "third_party/oneDNN/src/cpu/x64/xbyak/",
+        "include/",
+        "include/oneapi/",
+        "include/oneapi/dnnl/",
+        "src/",
+        "src/common/",
+        "src/cpu/",
+        "src/cpu/x64/xbyak/",
     ],
     visibility = ["//visibility:public"],
     linkopts = [
@@ -119,7 +124,14 @@ cc_library(
     deps = [
         "@mkl",
     ] + select({
-        "@//tools/config:thread_sanitizer": [],
+        "@pytorch//tools/config:thread_sanitizer": [],
         "//conditions:default": ["@tbb"],
     }),
+    defines = [
+        "DNNL_ENABLE_MAX_CPU_ISA",
+        "DNNL_ENABLE_CONCURRENT_EXEC",
+        "DNNL_ENABLE_PRIMITIVE_CACHE",
+        "DNNL_ENABLE_CPU_ISA_HINTS",
+        "ONEDNN_BUILD_GRAPH",
+    ],
 )

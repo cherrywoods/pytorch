@@ -22,8 +22,7 @@
 #include <ATen/ops/nll_loss2d_backward_native.h>
 #endif
 
-namespace at {
-namespace native {
+namespace at::native {
 
 namespace {
 
@@ -37,8 +36,8 @@ inline Tensor optional_contiguous(const Tensor& source) {
 // Returns the address of the first element of a tensor
 // or nullptr if the tensor is undefined.
 template <typename scalar_t>
-inline scalar_t* optional_data(const Tensor& source) {
-  return source.defined() ? source.data_ptr<scalar_t>() : nullptr;
+inline const scalar_t* optional_data(const Tensor& source) {
+  return source.defined() ? source.const_data_ptr<scalar_t>() : nullptr;
 }
 
 using at::cuda::detail::CUDA_NUM_THREADS;
@@ -52,7 +51,7 @@ __global__ void nll_loss2d_forward_no_reduce_kernel(
   PackedTensorAccessor64<scalar_t, 4> input,
   PackedTensorAccessor64<int64_t, 3> target,
   PackedTensorAccessor64<scalar_t, 3> output,
-  scalar_t* weight,
+  const scalar_t* weight,
   int64_t ignore_index
 ) {
   int64_t batch_size = input.size(0);
@@ -80,9 +79,9 @@ C10_LAUNCH_BOUNDS_1(CUDA_NUM_THREADS)
 __global__ void nll_loss2d_forward_kernel(
   scalar_t* output,
   scalar_t* total_weight,
-  scalar_t* input,
-  int64_t* target,
-  scalar_t* weight,
+  const scalar_t* input,
+  const int64_t* target,
+  const scalar_t* weight,
   int n_classes,
   int map_nelem,
   int blocks_per_sample,
@@ -126,7 +125,7 @@ template <typename scalar_t>
 C10_LAUNCH_BOUNDS_1(CUDA_NUM_THREADS)
 __global__ void nll_loss2d_forward_size_average_kernel(
   scalar_t* output,
-  scalar_t* total_weight
+  const scalar_t* total_weight
 ) {
   *output /= *total_weight;
 }
@@ -138,7 +137,7 @@ __global__ void nll_loss2d_backward_no_reduce_kernel(
   PackedTensorAccessor64<int64_t, 3> target,
   PackedTensorAccessor64<scalar_t, 3> grad_output,
   PackedTensorAccessor64<scalar_t, 4> grad_input,
-  scalar_t* weight,
+  const scalar_t* weight,
   int64_t ignore_index
 ) {
   int64_t batch_size = target.size(0);
@@ -163,10 +162,10 @@ template <typename scalar_t>
 C10_LAUNCH_BOUNDS_1(CUDA_NUM_THREADS)
 __global__ void nll_loss2d_backward_kernel(
   scalar_t* grad_input,
-  scalar_t* grad_output,
-  int64_t* target,
-  scalar_t* weights,
-  scalar_t* total_weight,
+  const scalar_t* grad_output,
+  const int64_t* target,
+  const scalar_t* weights,
+  const scalar_t* total_weight,
   bool size_average,
   int n_classes,
   int map_nelem,
@@ -324,10 +323,10 @@ void nll_loss2d_forward_out_cuda_template(
               CUDA_NUM_THREADS,
               0,
               at::cuda::getCurrentCUDAStream()>>>(
-                output.data_ptr<scalar_t>(),
-                total_weight.data_ptr<scalar_t>(),
-                input_.data_ptr<scalar_t>(),
-                target_.data_ptr<int64_t>(),
+                output.mutable_data_ptr<scalar_t>(),
+                total_weight.mutable_data_ptr<scalar_t>(),
+                input_.const_data_ptr<scalar_t>(),
+                target_.const_data_ptr<int64_t>(),
                 optional_data<scalar_t>(weight_),
                 input_.size(1),
                 input_.size(2) * input_.size(3),
@@ -338,8 +337,8 @@ void nll_loss2d_forward_out_cuda_template(
         if (reduction == at::Reduction::Mean) {
           nll_loss2d_forward_size_average_kernel<scalar_t>
               <<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(
-                  output.data_ptr<scalar_t>(),
-                  total_weight.data_ptr<scalar_t>());
+                  output.mutable_data_ptr<scalar_t>(),
+                  total_weight.const_data_ptr<scalar_t>());
           C10_CUDA_KERNEL_LAUNCH_CHECK();
         }
       });
@@ -442,11 +441,11 @@ void nll_loss2d_backward_out_cuda_template(
                 CUDA_NUM_THREADS,
                 0,
                 at::cuda::getCurrentCUDAStream()>>>(
-                  grad_input.data_ptr<scalar_t>(),
-                  grad_output.data_ptr<scalar_t>(),
-                  target_.data_ptr<int64_t>(),
+                  grad_input.mutable_data_ptr<scalar_t>(),
+                  grad_output.const_data_ptr<scalar_t>(),
+                  target_.const_data_ptr<int64_t>(),
                   optional_data<scalar_t>(weight_),
-                  total_weight.data_ptr<scalar_t>(),
+                  total_weight.const_data_ptr<scalar_t>(),
                   reduction == at::Reduction::Mean,
                   input.size(1),
                   map_nelem,
@@ -526,5 +525,4 @@ Tensor nll_loss2d_backward_cuda(
   return grad_input;
 }
 
-} // namespace native
-} // namespace at
+} // namespace at::native

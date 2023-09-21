@@ -56,8 +56,7 @@
 #include <ATen/ops/where.h>
 #endif
 
-namespace at {
-namespace native {
+namespace at::native {
 
 using namespace at::sparse_csr;
 
@@ -123,7 +122,7 @@ bool solve_arange(const Tensor& input, int64_t& start, int64_t& end, int64_t& st
   formats with support to batched and dense dimensions.
 */
 
-void _validate_sparse_compressed_tensor_args_worker(const Tensor& compressed_indices, const Tensor& plain_indices, const Tensor& values, const IntArrayRef size, const Layout& layout) {
+static void _validate_sparse_compressed_tensor_args_worker(const Tensor& compressed_indices, const Tensor& plain_indices, const Tensor& values, const IntArrayRef size, const Layout& layout) {
   // Layout must be Sparse Compressed, 2.4
   AT_DISPATCH_ALL_SPARSE_COMPRESSED_LAYOUTS(layout, "validate_sparse_compressed_tensor_args", [&]{});
 
@@ -134,21 +133,22 @@ void _validate_sparse_compressed_tensor_args_worker(const Tensor& compressed_ind
   const std::string plain_dim_name = plainDimName(layout);
 
   // Layout Invariants
-  // 2.1, 3.5
-  TORCH_CHECK(
-              plain_indices.layout() == kStrided && plain_indices.is_contiguous(),
-              "expected ", plain_indices_name, " to be a strided and contiguous tensor");
 
-  // 2.2, 3.6
-  TORCH_CHECK(
-              compressed_indices.layout() == kStrided && compressed_indices.is_contiguous(),
-              "expected ", compressed_indices_name ," to be a strided and contiguous tensor");
+  // Re 3.5 and 3.6: in the case of compressed/plain indices tensors,
+  // we require contiguity per-patch basis, that is, the last stride
+  // of these indices must be 1. The reasoning for this is that
+  // indices tensors within a patch are "atomic" in the sense that
+  // sliced compressed/plain indices would not represent the indices
+  // of any sparse compressed tensor as the slicing would break the
+  // description of the tensor index structure.
 
-  // 2.3, partially 3.7
-  // TODO: allow values be contiguous along both block dimensions when the format is BSR or BSC
-  TORCH_CHECK(
-      values.layout() == kStrided && values.is_contiguous(),
-      "expected values to be a strided and contiguous tensor");
+  // 2.1
+  TORCH_CHECK(plain_indices.layout() == kStrided,
+              "expected ", plain_indices_name, " to be a strided tensor but got ", plain_indices.layout(), " tensor");
+
+  // 2.2
+  TORCH_CHECK(compressed_indices.layout() == kStrided,
+              "expected ", compressed_indices_name, " to be a strided tensor but got ", compressed_indices.layout(), " tensor");
 
   const int base_ndim = 2;  // corresponds to compressed and plain indices
   const int batch_ndim = compressed_indices.dim() - 1;
@@ -156,6 +156,15 @@ void _validate_sparse_compressed_tensor_args_worker(const Tensor& compressed_ind
                            layout, "validate_sparse_compressed_tensor_args",
                            [&] { return 0; }, [&] { return 2; });
   const int dense_ndim = values.dim() - batch_ndim - block_ndim - 1;
+
+  // 2.3
+  TORCH_CHECK(values.layout() == kStrided,
+              "expected values to be a strided tensor but got ", values.layout(), " tensor");
+
+  // 3.7 is dropped, that is, values tensor does not need to be
+  // contiguous, in general. Particular algorithms on sparse
+  // compressed tensors may require contiguity though.
+
   // Shape and Strides invariants
 
   // 3.2
@@ -174,6 +183,15 @@ void _validate_sparse_compressed_tensor_args_worker(const Tensor& compressed_ind
               dense_ndim >= 0,
               "values must have dimensionality > sum of batch and block dimensionalities (=",
               batch_ndim, " + ", block_ndim, ") but got ", values.dim());
+
+  // 3.5
+  TORCH_CHECK(plain_indices.stride(-1) == 1,
+              "expected ", plain_indices_name, " to be a contiguous tensor per batch");
+
+  // 3.6
+  TORCH_CHECK(compressed_indices.stride(-1) == 1,
+              "expected ", compressed_indices_name, " to be a contiguous tensor per batch");
+
   // 3.1
   TORCH_CHECK(
               static_cast<int>(size.size()) == batch_ndim + base_ndim + dense_ndim,
@@ -195,7 +213,7 @@ void _validate_sparse_compressed_tensor_args_worker(const Tensor& compressed_ind
   DimVector compressed_indices_batchsize = DimVector(compressed_indices.sizes().slice(0, batch_ndim));
   DimVector plain_indices_batchsize = DimVector(plain_indices.sizes().slice(0, batch_ndim));
   DimVector values_batchsize = DimVector(values.sizes().slice(0, batch_ndim));
-  const int values_nnz = (values.numel() ? values.size(batch_ndim) : 0);
+  const int64_t values_nnz = values.size(batch_ndim);
   DimVector values_blocksize = DimVector(values.sizes().slice(batch_ndim + 1, block_ndim));
   DimVector values_densesize = DimVector(values.sizes().slice(batch_ndim + 1 + block_ndim, dense_ndim));
   TORCH_CHECK(
@@ -211,9 +229,9 @@ void _validate_sparse_compressed_tensor_args_worker(const Tensor& compressed_ind
                   ") must be divisible with blocksize[", i, "] (=", blocksize[i],
                   ") as defined by values shape");
   }
-  const int nrows = size[batch_ndim] / blocksize[0];
-  const int ncols = size[batch_ndim + 1] / blocksize[1];
-  int compressed_dim_size, plain_dim_size;
+  const int64_t nrows = size[batch_ndim] / blocksize[0];
+  const int64_t ncols = size[batch_ndim + 1] / blocksize[1];
+  int64_t compressed_dim_size, plain_dim_size;
   std::tie(compressed_dim_size, plain_dim_size) = AT_DISPATCH_ROW_SPARSE_COMPRESSED_LAYOUTS(layout, "validate_sparse_compressed_tensor_args",
                                                                                             [&] { return std::make_tuple(nrows, ncols); },
                                                                                             [&] { return std::make_tuple(ncols, nrows); });
@@ -274,6 +292,14 @@ void _validate_sparse_compressed_tensor_args_worker(const Tensor& compressed_ind
       ") must match device of ", plain_indices_name," (=",
       plain_indices.device(),
       ")");
+
+  // Autograd Invariants
+  //
+  // These are internal asserts because users should not be able to
+  // create non-floating point dtype tensors with requires_grad flag
+  // set to true.
+  TORCH_INTERNAL_ASSERT(!compressed_indices.requires_grad());
+  TORCH_INTERNAL_ASSERT(!plain_indices.requires_grad());
 }
 
 void _validate_sparse_compressed_tensor_args(const Tensor& compressed_indices, const Tensor& plain_indices, const Tensor& values, IntArrayRef size, Layout layout) {
@@ -303,7 +329,7 @@ void _validate_sparse_bsc_tensor_args(const Tensor& ccol_indices, const Tensor& 
 // of historical reasons (that ought to be removed in future) and does
 // not mean that the corresponding functionality would be CSR layout
 // only specific.
-SparseCsrTensor new_compressed_tensor(const TensorOptions& options) {
+static SparseCsrTensor new_compressed_tensor(const TensorOptions& options) {
   // TODO: remove this comment after enabling autograd support for CSR tensor
   // constructor.
   // TORCH_INTERNAL_ASSERT(impl::variable_excluded_from_dispatch());
@@ -337,6 +363,9 @@ Tensor _sparse_compressed_tensor_unsafe(const Tensor& compressed_indices,
   }
   Layout layout_ = layout.value();
   AT_DISPATCH_ALL_SPARSE_COMPRESSED_LAYOUTS(layout_, "sparse_compressed_tensor_unsafe", [&]{});
+  if (at::globalContext().checkSparseTensorInvariants()) {
+    _validate_sparse_compressed_tensor_args_worker(compressed_indices, plain_indices, values, size, layout_);
+  }
   TensorOptions options = TensorOptions().dtype(dtype).layout(layout_).device(device).pinned_memory(pin_memory);
   SparseCsrTensor self = new_compressed_tensor(options);
   get_sparse_csr_impl(self)->set_member_tensors(compressed_indices, plain_indices, values, size);
@@ -354,6 +383,9 @@ Tensor _sparse_compressed_tensor_unsafe_template(const Tensor& compressed_indice
                                                  c10::optional<bool> pin_memory) {
   Layout layout_ = layout.value_or(required_layout);
   TORCH_CHECK(layout_ == required_layout, "sparse compressed layout must be ",required_layout, " but got ", layout_);
+  if (at::globalContext().checkSparseTensorInvariants()) {
+    _validate_sparse_compressed_tensor_args_worker(compressed_indices, plain_indices, values, size, layout_);
+  }
   TensorOptions options = TensorOptions().dtype(dtype).layout(layout_).device(device).pinned_memory(pin_memory);
   SparseCsrTensor self = new_compressed_tensor(options);
   get_sparse_csr_impl(self)->set_member_tensors(compressed_indices, plain_indices, values, size);
@@ -377,7 +409,7 @@ SPARSE_COMPRESSED_TENSOR_UNSAFE(csc, kSparseCsc);
 SPARSE_COMPRESSED_TENSOR_UNSAFE(bsr, kSparseBsr);
 SPARSE_COMPRESSED_TENSOR_UNSAFE(bsc, kSparseBsc);
 
-DimVector _estimate_sparse_compressed_tensor_size(
+static DimVector _estimate_sparse_compressed_tensor_size(
     const Tensor& compressed_indices,
     const Tensor& plain_indices,
     const Tensor& values,
@@ -455,8 +487,6 @@ Tensor sparse_compressed_tensor(
   // See [Note: hacky wrapper removal for TensorOptions]
   TensorOptions options = TensorOptions().dtype(dtype).layout(layout_).device(device).pinned_memory(pin_memory);
 
-  _validate_sparse_compressed_tensor_args_worker(compressed_indices, plain_indices, values, size, layout_);
-
   return at::native::_sparse_compressed_tensor_unsafe(
       compressed_indices,
       plain_indices,
@@ -487,8 +517,6 @@ Tensor sparse_compressed_tensor(
 
   // See [Note: hacky wrapper removal for TensorOptions]
   TensorOptions options = TensorOptions().dtype(dtype).layout(layout_).device(device).pinned_memory(pin_memory);
-
-  _validate_sparse_compressed_tensor_args_worker(compressed_indices, plain_indices, values, size, layout_);
 
   return at::native::_sparse_compressed_tensor_unsafe(
       compressed_indices,
@@ -672,18 +700,28 @@ Tensor row_indices_sparse_csr(const Tensor& self) {
                                                    [&]{ return get_sparse_csr_impl(self)->plain_indices().alias(); });
 }
 
+Tensor crow_indices_default(const Tensor& self) {
+  TORCH_CHECK(false, "crow_indices expected sparse row compressed tensor layout but got ", self.layout());
+}
+
+Tensor col_indices_default(const Tensor& self) {
+  TORCH_CHECK(false, "col_indices expected sparse row compressed tensor layout but got ", self.layout());
+}
+
+Tensor ccol_indices_default(const Tensor& self) {
+  TORCH_CHECK(false, "ccol_indices expected sparse column compressed tensor layout but got ", self.layout());
+}
+
+Tensor row_indices_default(const Tensor& self) {
+  TORCH_CHECK(false, "row_indices expected sparse column compressed tensor layout but got ", self.layout());
+}
+
 int64_t sparse_dim_sparse_csr(const SparseCsrTensor& self) {
   return get_sparse_csr_impl(self)->sparse_dim();
 }
 
 int64_t dense_dim_sparse_csr(const SparseCsrTensor& self) {
   return get_sparse_csr_impl(self)->dense_dim();
-}
-
-bool _is_same_size_as_sparse_compressed(
-    const SparseCsrTensor& self,
-    const SparseCsrTensor& src) {
-  return self.sizes().equals(src.sizes());
 }
 
 const SparseCsrTensor& resize_as_sparse_compressed_(
@@ -858,7 +896,7 @@ Tensor select_sparse_csr_worker(const Tensor& self, int64_t dim, int64_t index) 
     // Selecting sparse dimension
     TORCH_CHECK(
         n_batch == 0,
-        select_name, ": selecting sparse dimensions is not implemented for batched sparse compressed tensors.")
+        select_name, ": selecting sparse dimensions is not supported for batched sparse compressed tensors.")
     TORCH_INTERNAL_ASSERT(dim == 0 || dim == 1);
 
     DimVector blocksize{1, 1};
@@ -1088,5 +1126,4 @@ Tensor select_copy_sparse_csr(const Tensor& self, int64_t dim, int64_t index) {
   return select_sparse_csr_worker<false, true>(self, dim, index);
 }
 
-} // namespace native
-} // namespace at
+} // namespace at::native

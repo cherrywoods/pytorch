@@ -79,7 +79,7 @@ class TestConstFold(TestCase):
         in_x, in_y = torch.tensor([[-0.45]]), torch.tensor([0.9])
         base_result = mod(in_x, in_y)
         fold_result = mod_folded(in_x, in_y)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_const_fold_basic_one_attr_name_collision(self):
         r"""
@@ -125,7 +125,7 @@ class TestConstFold(TestCase):
         in_x, in_y = torch.tensor([[5.0]]), torch.tensor([4.0])
         base_result = mod(in_x, in_y)
         fold_result = mod_folded(in_x, in_y)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_const_fold_basic_placeholder_reordered(self):
         """
@@ -133,9 +133,6 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-
             def forward(self, x, y):
                 return x * 2 + y
 
@@ -157,7 +154,7 @@ class TestConstFold(TestCase):
         in_y = torch.tensor([[0.45]])
         base_result = mod(in_x, in_y)
         fold_result = mod_folded(in_x, in_y)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_const_fold_noop(self):
         r"""
@@ -188,7 +185,7 @@ class TestConstFold(TestCase):
         in_x = torch.tensor([[-0.45]])
         base_result = mod(in_x)
         fold_result = mod_folded(in_x)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_const_fold_basic_two_attr_three_input(self):
         r"""
@@ -237,7 +234,7 @@ class TestConstFold(TestCase):
         )
         base_result = mod(in_x, in_y, in_z)
         fold_result = mod_folded(in_x, in_y, in_z)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_const_fold_basic_two_attr(self):
         r"""
@@ -274,7 +271,7 @@ class TestConstFold(TestCase):
         in_x = torch.randn(2, 3)
         fold_result = mod_folded(in_x)
         base_result = mod(in_x)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_const_fold_multi_const_folded_attrs(self):
         r"""
@@ -325,7 +322,7 @@ class TestConstFold(TestCase):
         in_x, in_y = torch.randn(4, 4), torch.randn(4)
         fold_result = mod_folded(in_x, in_y)
         base_result = mod(in_x, in_y)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_const_fold_submod_hierarchy(self):
         r"""
@@ -359,7 +356,7 @@ class TestConstFold(TestCase):
         in_x = torch.randn(2, 3)
         fold_result = mod_folded(in_x)
         base_result = mod(in_x)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_retain_node_meta(self):
         r"""
@@ -412,7 +409,7 @@ class TestConstFold(TestCase):
         in_x = torch.randn(2, 3)
         fold_result = gm_folded(in_x)
         base_result = mod(in_x)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_const_fold_has_inlined_call_module_node(self):
         class ConstFoldTestModule(torch.nn.Module):
@@ -433,7 +430,7 @@ class TestConstFold(TestCase):
         in_x = torch.randn(2, 3)
         fold_result = gm_folded(in_x)
         base_result = mod(in_x)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_const_fold_module_attr(self):
         class ConstFoldTestModule(torch.nn.Module):
@@ -455,7 +452,7 @@ class TestConstFold(TestCase):
         in_x = torch.randn(2, 3)
         fold_result = gm_folded(in_x)
         base_result = mod(in_x)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_const_fold_unused_placeholder(self):
         class ConstFoldTestModule(torch.nn.Module):
@@ -474,7 +471,7 @@ class TestConstFold(TestCase):
         in_x = torch.randn(2, 3)
         fold_result = gm_folded(in_x, in_x, in_x)
         base_result = mod(in_x, in_x, in_x)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_dict_output(self):
         class ConstFoldTestModule(torch.nn.Module):
@@ -493,7 +490,7 @@ class TestConstFold(TestCase):
         in_x = torch.randn(2, 3)
         fold_result = gm_folded(in_x)
         base_result = mod(in_x)
-        self.assertEqual(fold_result["result"], base_result["result"], rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result["result"], base_result["result"]))
 
     def test_two_outputs(self):
         class ConstFoldTestModule(torch.nn.Module):
@@ -512,8 +509,8 @@ class TestConstFold(TestCase):
         in_x = torch.randn(2, 3)
         fold_result = gm_folded(in_x)
         base_result = mod(in_x)
-        self.assertEqual(fold_result[0], base_result[0], rtol=0, atol=0, exact_device=True)
-        self.assertEqual(fold_result[1], base_result[1], rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result[0], base_result[0]))
+        self.assertTrue(torch.equal(fold_result[1], base_result[1]))
 
     def test_three_outputs(self):
         class ConstFoldTestModule(torch.nn.Module):
@@ -532,9 +529,9 @@ class TestConstFold(TestCase):
         in_x = torch.randn(2, 3)
         fold_result = gm_folded(in_x)
         base_result = mod(in_x)
-        self.assertEqual(fold_result[0], base_result[0], rtol=0, atol=0, exact_device=True)
-        self.assertEqual(fold_result[1], base_result[1], rtol=0, atol=0, exact_device=True)
-        self.assertEqual(fold_result[2], base_result[2], rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result[0], base_result[0]))
+        self.assertTrue(torch.equal(fold_result[1], base_result[1]))
+        self.assertTrue(torch.equal(fold_result[2], base_result[2]))
 
     def test_check_inline_non_const(self):
         r"""
@@ -566,7 +563,7 @@ class TestConstFold(TestCase):
         in_x = torch.randn(2, 3)
         fold_result = gm_folded(in_x)
         base_result = mod(in_x)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_check_inline_non_const_mult_return(self):
         r"""
@@ -598,8 +595,8 @@ class TestConstFold(TestCase):
         in_x = torch.randn(2, 3)
         fold_result = gm_folded(in_x)
         base_result = mod(in_x)
-        self.assertEqual(fold_result[0], base_result[0], rtol=0, atol=0, exact_device=True)
-        self.assertEqual(fold_result[1], base_result[1], rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result[0], base_result[0]))
+        self.assertTrue(torch.equal(fold_result[1], base_result[1]))
 
     def test_check_skip_folding_quant_dequant_pattern(self):
         r"""
@@ -645,7 +642,7 @@ class TestConstFold(TestCase):
         # Now run both folded and non-folded to check results equal.
         fold_result = gm_folded(in_x)
         base_result = mod(in_x)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))
 
     def test_fold_module(self):
         r"""
@@ -667,7 +664,7 @@ class TestConstFold(TestCase):
 
         # Now run both folded and non-folded to check results equal.
         inp = torch.randn(4, 4)
-        self.assertEqual(mod_folded(inp), mod(inp), rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(mod_folded(inp), mod(inp)))
 
     def test_const_fold_tensor_meta(self):
         self._test_const_fold_tensor_meta(True)
@@ -703,9 +700,9 @@ class TestConstFold(TestCase):
         for n in mod_folded.graph.nodes:
             if n.op == "get_attr":
                 attr = self._get_attr(n)
-                self.assertEquals(_extract_tensor_metadata(attr), n.meta["tensor_meta"])
+                self.assertEqual(_extract_tensor_metadata(attr), n.meta["tensor_meta"])
 
         # Now run both folded and non-folded to check results equal.
         base_result = mod(in_x, in_y)
         fold_result = mod_folded(in_x, in_y)
-        self.assertEqual(fold_result, base_result, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(fold_result, base_result))

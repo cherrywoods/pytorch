@@ -34,7 +34,7 @@ from torch.testing._internal.common_distributed import (
 from torch.testing._internal.common_utils import (
     IS_MACOS,
     load_tests,
-    sandcastle_skip_if,
+    skip_but_pass_in_sandcastle_if,
     get_cycles_per_ms,
 )
 
@@ -59,11 +59,11 @@ def foo_add():
     return torch.add(torch.ones(1), torch.ones(1))
 
 def udf_with_torch_ops(device=-1, use_record_function=False):
-    device_ctx = contextlib.suppress() if device == -1 else torch.cuda.device(device)
+    device_ctx = contextlib.nullcontext() if device == -1 else torch.cuda.device(device)
     record_function_ctx = (
         torch.autograd.profiler.record_function("##forward##")
         if use_record_function
-        else contextlib.suppress()
+        else contextlib.nullcontext()
     )
     with device_ctx, record_function_ctx:
         t1, t2 = torch.ones(1), torch.ones(1)
@@ -237,7 +237,8 @@ def non_cont_test(t_view, t_cont):
         raise Exception('t_view is contiguous!')
     if not t_cont.is_contiguous():
         raise Exception('t_cont is not contiguous!')
-    torch.testing.assert_close(t_view, t_cont, rtol=0, atol=0, msg='t_view is not equal to t_cont!')
+    if not torch.equal(t_view, t_cont):
+        raise Exception('t_view is not equal to t_cont!')
     return t_view
 
 def my_function(a, b, c):
@@ -263,7 +264,7 @@ def my_complex_tensor_function(list_input, tensor_class_input, dict_input):
     res = list_input[0]
     for t in list_input:
         res += t
-    for k, v in dict_input.items():
+    for v in dict_input.values():
         res += v
     complex_tensors = tensor_class_input.tensors
     return (res, complex_tensors[0], complex_tensors[1], complex_tensors[2])
@@ -913,9 +914,7 @@ class RpcTestCommon:
             self.assertEqual(val, 0)
         tok = time.time()
         print(
-            "Rank {} finished testing {} times in {} seconds.".format(
-                self.rank, repeat, tok - tik
-            )
+            f"Rank {self.rank} finished testing {repeat} times in {tok - tik} seconds."
         )
 
     def _builtin_remote_ret(self, x, y, expected):
@@ -1067,7 +1066,7 @@ class RpcTestCommon:
             ps_gradient = rref.rpc_sync().get_gradient(rref)
             if ps_gradient.is_sparse:
                 ps_gradient = ps_gradient.to_dense().double()
-            self.assertEqual(gradient, ps_gradient, rtol=0, atol=0, exact_device=True)
+            self.assertTrue(torch.equal(gradient, ps_gradient))
 
     def _my_parameter_server(self, sparse):
         ps_rref = RRef(MyParameterServer(self.world_size - 1))
@@ -1586,10 +1585,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
         og_func = rpc.api._wait_all_workers
 
         def wait_all_workers_sleep(timeout):
-            try:
-                rpc.api._all_gather(SlowPickleClass(0.5), timeout=timeout)
-            except RuntimeError as ex:
-                raise ex
+            rpc.api._all_gather(SlowPickleClass(0.5), timeout=timeout)
 
         rpc.api._wait_all_workers = wait_all_workers_sleep
 
@@ -1807,7 +1803,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
             res = fut.wait()
 
         function_events = p.function_events
-        event_cpu_mem_usages = set(event.cpu_memory_usage for event in function_events)
+        event_cpu_mem_usages = {event.cpu_memory_usage for event in function_events}
         # if cpu_memory_usage was not propagated over the wire, this set would
         # only contain 0 (indicates no memory being profiled)
         self.assertNotEqual({0}, event_cpu_mem_usages)
@@ -1817,7 +1813,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
             res = fut.wait()
 
         function_events = p.function_events
-        event_cpu_mem_usages = set(event.cpu_memory_usage for event in function_events)
+        event_cpu_mem_usages = {event.cpu_memory_usage for event in function_events}
         self.assertEqual({0}, event_cpu_mem_usages)
 
     @dist_init
@@ -1838,7 +1834,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
                 trace = json.load(f)
                 event_names = [event['name'] for event in trace]
                 for expected_event_name in EXPECTED_REMOTE_EVENTS + [RPCExecMode.ASYNC.value]:
-                    event_exists = any([expected_event_name in event_name for event_name in event_names])
+                    event_exists = any(expected_event_name in event_name for event_name in event_names)
                     self.assertTrue(event_exists)
 
     @dist_init
@@ -1848,7 +1844,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
             return
 
         # Spawn multiple threads that send RPCs to ensure keys are correctly
-        # prefixied when there are multiple RPCs being created/in flight at the
+        # prefixed when there are multiple RPCs being created/in flight at the
         # same time.
         dst_ranks = [rank for rank in range(0, self.world_size) if rank != self.rank]
 
@@ -2163,7 +2159,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
         if self.rank == 1:
             with p() as prof:
                 record_function_ctx_mgr = (
-                    contextlib.suppress()
+                    contextlib.nullcontext()
                     if not use_record_function
                     else torch.autograd.profiler.record_function(
                         "foo"
@@ -2902,7 +2898,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
 
         def launched_rpc(events):
             expected_name = f"rpc_{RPCExecMode.ASYNC.value}#_rref_typeof_on_owner"
-            return any([e.name.startswith(expected_name) for e in events])
+            return any(e.name.startswith(expected_name) for e in events)
 
         dst = worker_name((self.rank + 1) % self.world_size)
         rref = rpc.remote(dst, torch.add, args=(torch.ones(2), 1))
@@ -3073,7 +3069,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
     @dist_init(setup_rpc=True)
     def test_call_method_on_rref(self):
         """
-        Tests that it is possible to call an instance method on a remote objet
+        Tests that it is possible to call an instance method on a remote object
         by using rref.owner() as destination of the call.
         """
         vals = [10, 2, 5, 7]
@@ -3155,7 +3151,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
         rref1 = RRef(self.rank)
         id_class = "GloballyUniqueId"
         self.assertEqual(
-            "OwnerRRef({}(created_on={}, local_id=0))".format(id_class, self.rank), rref1.__str__()
+            f"OwnerRRef({id_class}(created_on={self.rank}, local_id=0))", rref1.__str__()
         )
 
         dst_rank = (self.rank + 1) % self.world_size
@@ -3326,7 +3322,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
             self.assertIn(key, expected.keys())
 
     @dist_init(setup_rpc=False)
-    @sandcastle_skip_if(
+    @skip_but_pass_in_sandcastle_if(
         IS_MACOS,
         "Test is flaky on MacOS since libuv error handling is not as robust as TCP",
     )
@@ -4298,7 +4294,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
             return
 
         dst_rank = (self.rank + 1) % self.world_size
-        dst_worker = "worker{}".format(dst_rank)
+        dst_worker = f"worker{dst_rank}"
         # 10 ms timeout
         rref = rpc.remote(dst_worker, my_sleep_func, args=(2, ), timeout=0.01)
         # Future corresponding to the remote creation should time out.
@@ -4313,7 +4309,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
         wait_until_owners_and_forks_on_rank(1, 1, rank=1)
 
     @dist_init(setup_rpc=False)
-    @sandcastle_skip_if(
+    @skip_but_pass_in_sandcastle_if(
         os.environ.get("RPC_INIT_WITH_TCP", None) == "1",
         "init_pg_then_rpc does not work with TCP init, see https://github.com/pytorch/pytorch/issues/41614."
     )
@@ -4344,7 +4340,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
         rpc.shutdown()
 
     @dist_init(setup_rpc=False)
-    @sandcastle_skip_if(
+    @skip_but_pass_in_sandcastle_if(
         os.environ.get("RPC_INIT_WITH_TCP", None) == "1",
         "init_rpc_then_pg does not work with TCP init, see https://github.com/pytorch/pytorch/issues/41614."
     )
@@ -4397,7 +4393,7 @@ class RpcTest(RpcAgentTestFixture, RpcTestCommon):
             ret = torch.futures.wait_all(futs)
 
     @dist_init(setup_rpc=False)
-    @sandcastle_skip_if(
+    @skip_but_pass_in_sandcastle_if(
         os.environ.get("RPC_INIT_WITH_TCP", None) == "1",
         "Test does not work with TCP init, see https://github.com/pytorch/pytorch/issues/46491",
     )
@@ -6115,7 +6111,7 @@ class TensorPipeAgentCudaRpcTest(RpcAgentTestFixture, RpcTestCommon):
             options.set_device_map(input_src, {remote_device: local_device})
         elif self.rank == 2:
             # worker2 will get the out RRef and call to_here() and hence, needs
-            # to configure devcie map.
+            # to configure device map.
             options.set_device_map(model_dst, {local_device: remote_device})
 
         rpc.init_rpc(

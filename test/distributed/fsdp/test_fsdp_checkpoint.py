@@ -116,7 +116,7 @@ class TestFSDPCheckpoint(FSDPTest):
         assert outputs
         assert models
 
-        for (l, o) in zip(losses[1:], outputs[1:]):
+        for l, o in zip(losses[1:], outputs[1:]):
             self.assertEqual(losses[0], l)
             self.assertEqual(outputs[0], o)
 
@@ -257,10 +257,10 @@ class TestFSDPCheckpoint(FSDPTest):
                         offload_ctx = (
                             get_patched_save_on_cpu()(pin_memory=True)
                             if offload_activations
-                            else contextlib.suppress()
+                            else contextlib.nullcontext()
                         )
                         with offload_ctx:
-                            out = checkpoint(m, inp)
+                            out = checkpoint(m, inp, use_reentrant=True)
                     else:
                         # _save_on_cpu should not be called yet
                         self.assertFalse(_save_on_cpu_called)
@@ -324,7 +324,6 @@ class TestModel(nn.Module):
 
 
 class TestFSDPCheckpointSubmodule(FSDPTest):
-
     # TODO: grad value checks occasionally fails when use_reentrant = True
     @skip_if_lt_x_gpu(2)
     @parametrize("use_reentrant", [False])
@@ -345,19 +344,22 @@ class TestFSDPCheckpointSubmodule(FSDPTest):
         }
 
         # Wrap no checkpointing model submodules with FSDP
-        model.m1 = FSDP(module=model.checkpoint1, **fsdp_kwargs)
-        model.m2 = FSDP(module=model.checkpoint2, **fsdp_kwargs)
+        model.checkpoint1 = FSDP(module=model.checkpoint1, **fsdp_kwargs)
+        model.checkpoint2 = FSDP(module=model.checkpoint2, **fsdp_kwargs)
 
         # Wrap checkpointing model submodules with FSDP
-        model_ac.m1 = FSDP(module=model_ac.checkpoint1, **fsdp_kwargs)
-        model_ac.m2 = FSDP(module=model_ac.checkpoint2, **fsdp_kwargs)
+        model_ac.checkpoint1 = FSDP(module=model_ac.checkpoint1, **fsdp_kwargs)
+        model_ac.checkpoint2 = FSDP(module=model_ac.checkpoint2, **fsdp_kwargs)
 
         x = torch.randn(2, 100, device="cuda")
 
         model(x).sum().backward()
         model_ac(x).sum().backward()
 
-        for p1, p2 in zip(model.parameters(), model_ac.parameters()):
+        for (n1, p1), (n2, p2) in zip(
+            model.named_parameters(), model_ac.named_parameters()
+        ):
+            self.assertEqual(n1, n2)
             self.assertTrue(p1.grad.allclose(p2.grad))
 
 

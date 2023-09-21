@@ -1,80 +1,63 @@
+"""
+PYTEST_DONT_REWRITE (prevents pytest from rewriting assertions, which interferes
+with test_adam in OptimizerTests)
+"""
+import functools
+
 # Owner(s): ["module: dynamo"]
 
-import contextlib
 import inspect
-import unittest
 
 import torch
 
 import torch._dynamo
 import torch._dynamo.test_case
 import torch._dynamo.testing
-
+from torch.nn import Parameter
 
 input = torch.ones([10, 10])
 model = torch.nn.Sequential(*[torch.nn.Linear(10, 10) for _ in range(2)])
 model(input).sum().backward()
 
 
-# Include optimizer code for tracing
-optim_filenames = set(
-    [
-        inspect.getfile(obj)
-        for obj in torch.optim.__dict__.values()
-        if inspect.isclass(obj)
-    ]
-)
+def get_optimizer_step(opt, closure=None):
+    # run the patcher so that step has the expected structure
+    torch._dynamo.eval_frame.TorchPatcher.patch()
+
+    # unwrap step to avoid a deliberate graph break due to
+    # a limitation of functionalization/no_grad detection
+    # see the [Note on graph break] in optimizer.py
+    # This ignores the outer _use_grad_if_differentiable wrapper, which is fine for now
+    # as dynamo does not support differentiable optimizers anyway
+    step_fn = opt.step.__wrapped__
+    if closure is not None:
+
+        def fn():
+            step_fn(opt, closure)
+
+    else:
+
+        def fn():
+            step_fn(opt)
+
+    return fn
 
 
-optim_filenames |= {torch.optim._functional.__file__}
-
-
-def make_test(optim_cls, exp_graph_count=1, closure=None, **kwargs):
+def make_test(optim_cls, closure=None, **kwargs):
     opt = optim_cls(model.parameters(), **kwargs)
 
     def test_fn(self):
         nonlocal opt
-        if closure is not None:
 
-            def fn():
-                opt.step(closure)
+        fn = get_optimizer_step(opt, closure=closure)
 
-        else:
-            fn = opt.step
-
-        _, _, graphs, _, _, _ = torch._dynamo.explain(fn)
-
-        self.assertEqual(exp_graph_count, len(graphs))
+        with torch.set_grad_enabled(False):
+            torch.compile(fn, backend="eager", fullgraph=True)()
 
     return test_fn
 
 
-@contextlib.contextmanager
-def enable_optimizer_tracing():
-    try:
-        old = set(torch._dynamo.skipfiles.FILENAME_ALLOWLIST)
-
-        torch._dynamo.skipfiles.FILENAME_ALLOWLIST.update(optim_filenames)
-        yield
-    finally:
-        torch._dynamo.skipfiles.FILENAME_ALLOWLIST.clear()
-        torch._dynamo.skipfiles.FILENAME_ALLOWLIST.update(old)
-
-
 class OptimizerTests(torch._dynamo.test_case.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-
-        # needed until pytorch assertion is changed to enable Adam
-        # to be called with capturable=True
-        cls._exit_stack.enter_context(
-            unittest.mock.patch.object(
-                torch._dynamo.config, "capture_scalar_outputs", True
-            )
-        )
-        cls._exit_stack.enter_context(enable_optimizer_tracing())
-
     test_sgd = make_test(torch.optim.SGD, lr=0.01)
     # lgbfs has data-dependent control and internally iterates
     # calling the closure
@@ -83,42 +66,25 @@ class OptimizerTests(torch._dynamo.test_case.TestCase):
     #    torch.optim.LBFGS, exp_frame_cnt=3, closure=lambda: model(input).sum()
     # )
 
-    # These optimizers are disabled until we remove item() calls
-    test_adam = make_test(torch.optim.Adam, exp_graph_count=0)
-    test_adamax = make_test(torch.optim.Adamax, exp_graph_count=0)
-    test_adamw = make_test(torch.optim.AdamW, exp_graph_count=0)
-
-    # RAdam and Adagrad have data-dependent control which breaks the graph;
+    # Has data dependent control for rectification (needs symint)
+    # RAdam has data-dependent control which breaks the graph;
     # furthermore, the break is inside a for loop, so we bail on the frame
     # entirely.  This is basically an xfail; if the frame count goes up
     # you done good
-    test_nadam = make_test(torch.optim.NAdam, exp_graph_count=0)
-    test_radam = make_test(torch.optim.RAdam, exp_graph_count=0)
-    test_adagrad = make_test(torch.optim.Adagrad, exp_graph_count=0)
-
-    # ASGD has a small optimization that avoids averaging
-    # This will fully capture the graph once that optimization is removed
-    # test_asgd = make_test(torch.optim.ASGD, exp_graph_count=0)
+    # test_radam = unittest.skipIf(IS_FBCODE, "TypeError: _use_grad() missing")(
+    #    make_test(torch.optim.RAdam, exp_graph_count=0)
+    # )
 
 
 # exclude SparseAdam because other areas of the stack don't support it yet
 # the others are handled specially above
-exclude = set(
-    [
-        "SGD",  # Handled above
-        "ASGD",  # Disabled pending item call removal + optimization removal
-        "Optimizer",
-        "SparseAdam",  # Unsupported
-        "LBFGS",  # Unsupported
-        "Adam",  # Disabled pending item call removal
-        "Adamax",  # Disabled pending item call removal
-        "AdamW",  # Disabled pending item call removal
-        "RAdam",  # Disabled pending item call removal
-        "NAdam",  # Disabled pending item call removal
-        "Adagrad",  # Disabled pending item call removal
-        "ASGD",
-    ]
-)
+exclude = {
+    "SGD",  # Handled above
+    "Optimizer",
+    "SparseAdam",  # Unsupported
+    "LBFGS",  # Unsupported
+    "RAdam",  # Has data dependent control for rectification (needs symint)
+}
 
 optimizers = [
     opt
@@ -134,17 +100,9 @@ for opt in optimizers:
 
 
 class End2EndTests(torch._dynamo.test_case.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls._exit_stack.enter_context(enable_optimizer_tracing())
-
     # https://github.com/pytorch/torchdynamo/issues/1604
     def test_optimizing_over_tensor_with_requires_grad(self):
         class Net(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-
             def forward(self, x, y):
                 z = torch.bmm(x, y)
                 z = torch.flatten(z, 1)
@@ -169,7 +127,28 @@ class End2EndTests(torch._dynamo.test_case.TestCase):
         batch = {"x": input1, "y": input2}
         for _ in range(2):
             opt_training_iter_fn(batch, net, optimizer)
-        self.assertEqual(cnts.frame_count, 1)
+        self.assertEqual(cnts.frame_count, 2)
+
+    def test_state_dict(self):
+        @torch.compile(backend="eager")
+        def _test_state_dict(weight, bias, input):
+            def fn_base(optimizer, weight, bias):
+                optimizer.zero_grad()
+                i = input
+                loss = (weight.mv(i) + bias).pow(2).sum()
+                loss.backward()
+                return loss
+
+            optimizer = torch.optim.Adagrad([weight, bias])
+            fn = functools.partial(fn_base, optimizer, weight, bias)
+            return optimizer, fn
+
+        optimizer, fn = _test_state_dict(
+            Parameter(torch.randn(10, 5)),
+            Parameter(torch.randn(10)),
+            torch.randn(5, requires_grad=True),
+        )
+        optimizer.step(fn)
 
 
 if __name__ == "__main__":

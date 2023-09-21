@@ -23,13 +23,17 @@ namespace autograd {
 C10_DEFINE_TLS_static(std::shared_ptr<Node>, tls_current_evaluating_node);
 #define current_evaluating_node (tls_current_evaluating_node.get())
 
-NodeGuard::NodeGuard(std::shared_ptr<Node> node) {
-  last_evaluating_node_ = std::move(current_evaluating_node);
+NodeGuard::NodeGuard(std::shared_ptr<Node> node)
+    : last_evaluating_node_(std::move(current_evaluating_node)) {
   current_evaluating_node = std::move(node);
 }
 NodeGuard::~NodeGuard() {
   // restore the previous evaluating node
   current_evaluating_node = std::move(last_evaluating_node_);
+}
+
+std::shared_ptr<Node> get_current_node() {
+  return current_evaluating_node;
 }
 
 void Node::assign_parent() {

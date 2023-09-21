@@ -21,13 +21,13 @@ class OptionalArrayRef final {
  public:
   // Constructors
 
-  constexpr OptionalArrayRef() noexcept {}
+  constexpr OptionalArrayRef() noexcept = default;
 
   constexpr OptionalArrayRef(nullopt_t) noexcept {}
 
   OptionalArrayRef(const OptionalArrayRef& other) = default;
 
-  OptionalArrayRef(OptionalArrayRef&& other) = default;
+  OptionalArrayRef(OptionalArrayRef&& other) noexcept = default;
 
   constexpr OptionalArrayRef(const optional<ArrayRef<T>>& other) noexcept
       : wrapped_opt_array_ref(other) {}
@@ -90,7 +90,7 @@ class OptionalArrayRef final {
 
   OptionalArrayRef& operator=(const OptionalArrayRef& other) = default;
 
-  OptionalArrayRef& operator=(OptionalArrayRef&& other) = default;
+  OptionalArrayRef& operator=(OptionalArrayRef&& other) noexcept = default;
 
   constexpr OptionalArrayRef& operator=(
       const optional<ArrayRef<T>>& other) noexcept {

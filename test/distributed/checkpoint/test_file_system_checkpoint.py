@@ -1,6 +1,7 @@
 # Owner(s): ["oncall: distributed"]
 
 import os
+import sys
 import shutil
 import tempfile
 from typing import Dict
@@ -73,22 +74,14 @@ def assert_state_dict_equal(
             for local_shard_1, local_shard_2 in zip(
                 value_1.local_shards(), value_2.local_shards()
             ):
-                self.assertEqual(
-                    local_shard_1.tensor,
-                    local_shard_1.tensor,
-                    rtol=0,
-                    atol=0,
-                    exact_device=True,
-                    msg=f"Key {key}'s shard does not match"
+                self.assertTrue(
+                    torch.equal(local_shard_1.tensor, local_shard_2.tensor),
+                    f"Key {key}'s shard does not match",
                 )
         elif isinstance(value_1, torch.Tensor):
-            self.assertEqual(
-                value_1,
-                value_2,
-                rtol=0,
-                atol=0,
-                exact_device=True,
-                msg=f"Key {key}'s tensor does not match"
+            self.assertTrue(
+                torch.equal(value_1, value_2),
+                f"Key {key}'s tensor does not match",
             )
 
     return True
@@ -108,7 +101,7 @@ class MyShardedModel3(torch.nn.Module):
         self,
         spec: ShardingSpec,
     ) -> None:
-        super(MyShardedModel3, self).__init__()
+        super().__init__()
         self.sharded_tensor: ShardedTensor = sharded_tensor.rand(
             spec, 10, 20, init_rrefs=False
         )

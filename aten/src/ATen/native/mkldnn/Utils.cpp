@@ -70,13 +70,10 @@ void check_mkldnn_binary_fusion_inputs(
       "mkldnn pointwise binary fusion: input's device should be CPU");
   TORCH_CHECK(
       input.scalar_type() == ScalarType::Float ||
-          input.scalar_type() == ScalarType::BFloat16,
-      "mkldnn pointwise binary: input's dtype should be float or bfloat16");
-  if (input.scalar_type() == ScalarType::BFloat16) {
-    TORCH_CHECK(
-        mkldnn_bf16_device_check(),
-        "mkldnn pointwise binary: bf16 path needs the cpu support avx512bw, avx512vl and avx512dq");
-  }
+          input.scalar_type() == ScalarType::BFloat16 ||
+          input.scalar_type() == ScalarType::Half,
+      "mkldnn pointwise binary: input's dtype should be float, bfloat16 or half");
+  mkldnn_check_low_precision(input.scalar_type(), "mkldnn pointwise binary");
 }
 
 #if AT_MKLDNN_ENABLED()
@@ -133,6 +130,17 @@ AttrFunction attr_func_gelu = [](torch::List<c10::optional<at::Scalar>> scalars,
   return ideep::attr_t::fuse_gelu(1.0, 0.f, 0.f, gelu_type);
 };
 
+AttrFunction attr_func_hardsigmoid =
+    [](torch::List<c10::optional<at::Scalar>> scalars,
+       c10::optional<c10::string_view> algorithm) {
+      ideep::attr_t attr;
+      ideep::post_ops po;
+      po.append_eltwise(
+          ideep::algorithm::eltwise_hardsigmoid, 1.0f / 6.0f, 0.5f);
+      attr.set_post_ops(po);
+      return attr;
+    };
+
 const std::map<c10::string_view, AttrFunction>& fusion_unary_attr_map() {
   static const std::map<c10::string_view, AttrFunction> fusion_attr_map{
       {"relu", ATTR_FUNC(relu)},
@@ -140,6 +148,7 @@ const std::map<c10::string_view, AttrFunction>& fusion_unary_attr_map() {
       {"tanh", ATTR_FUNC(tanh)},
       {"swish", ATTR_FUNC(swish)},
       {"hardswish", ATTR_FUNC(hardswish)},
+      {"hardsigmoid", attr_func_hardsigmoid},
       {"leaky_relu", attr_func_leaky_relu},
       {"hardtanh", attr_func_hardtanh},
       {"gelu", attr_func_gelu},

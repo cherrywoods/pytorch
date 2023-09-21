@@ -12,7 +12,6 @@ from typing import (
     Iterator,
     Tuple,
     Dict,
-    Optional,
     List,
     Sequence,
     TypeVar,
@@ -25,6 +24,7 @@ import torch.distributed as dist
 from torch.utils._pytree import tree_flatten, tree_unflatten, TreeSpec
 from torch.testing._internal.common_distributed import (
     MultiProcessTestCase,
+    MultiThreadedTestCase,
     TEST_SKIPS,
     skip_if_lt_x_gpu,
 )
@@ -37,9 +37,9 @@ from torch.distributed._tensor import (
     redistribute,
 )
 from torch.distributed._tensor.api import DTensor
-from torch.distributed._tensor.placement_types import Placement
+from torch.distributed._tensor.placement_types import Placement, DTensorSpec
 
-DEVICE_TYPE = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE_TYPE = "cuda" if torch.cuda.is_available() and torch.cuda.device_count() > 1 else "cpu"
 NUM_DEVICES = 4
 
 # We use this as a proxy for "multiple GPUs exist"
@@ -50,10 +50,27 @@ if torch.cuda.is_available() and torch.cuda.device_count() > 1:
 T = TypeVar("T")
 
 
+class MLPModule(torch.nn.Module):
+    def __init__(self, device):
+        super().__init__()
+        torch.manual_seed(5)
+        self.net1 = torch.nn.Linear(10, 16, device=device)
+        self.relu = torch.nn.ReLU()
+        self.net2 = torch.nn.Linear(16, 10, device=device)
+
+    def forward(self, x):
+        return self.net2(self.relu(self.net1(x)))
+
+    def reset_parameters(self):
+        self.net1.reset_parameters()
+        self.net2.reset_parameters()
+
+
 def skip_unless_torch_gpu(method: T) -> T:
     """
     Test decorator which skips the test unless there's a GPU available to torch.
 
+    >>> # xdoctest: +SKIP
     >>> @skip_unless_torch_gpu
     >>> def test_some_method(self) -> None:
     >>>   ...
@@ -70,25 +87,25 @@ class RedistributeProfile:
 @contextmanager
 def redistribute_profiler() -> Generator[RedistributeProfile, None, None]:
 
-    orig_redistribute_dtensor = redistribute.redistribute_dtensor
+    orig_redistribute_local_tensor = redistribute.redistribute_local_tensor
     profile: RedistributeProfile = RedistributeProfile(num_calls=0)
 
     # pyre-ignore[53]
-    def patched_redistribute_dtensor(
-        input: DTensor,
-        device_mesh: DeviceMesh,
-        placements: Sequence[Placement],
+    def patched_redistribute_local_tensor(
+        local_tensor: torch.Tensor,
+        current_spec: DTensorSpec,
+        target_spec: DTensorSpec,
     ) -> DTensor:
-        result = orig_redistribute_dtensor(input, device_mesh, placements)
+        result = orig_redistribute_local_tensor(local_tensor, current_spec, target_spec)
         profile.num_calls += 1
         return result
 
     try:
         # pyre-ignore[9]
-        redistribute.redistribute_dtensor = patched_redistribute_dtensor
+        redistribute.redistribute_local_tensor = patched_redistribute_local_tensor
         yield profile
     finally:
-        redistribute.redistribute_dtensor = orig_redistribute_dtensor
+        redistribute.redistribute_local_tensor = orig_redistribute_local_tensor
 
 
 class DTensorTestBase(MultiProcessTestCase):
@@ -119,6 +136,10 @@ class DTensorTestBase(MultiProcessTestCase):
 
     def destroy_pg(self) -> None:
         # Wait for all ranks to reach here before starting shutdown.
+        # FIXME dist.barrier deadlocks with multiple threads and NCCL: https://github.com/pytorch/pytorch/issues/95895
+        # dist.all_reduce(torch.zeros((1,), device="cuda" if torch.cuda.is_available() else "cpu"))
+        # FIXME can't use the above all_reduce as it causes hangs on bionic and focal. It hangs:
+        #  test_dtensor.py  -- DTensorMeshTest.test_dtensor_device_mesh_device_conversion
         dist.barrier()
         dist.destroy_process_group()
 
@@ -143,15 +164,10 @@ class DTensorTestBase(MultiProcessTestCase):
                 )
 
 
+TestFunc = Callable[[object], object]
+
 # wrapper to initialize comms (processgroup)
-def with_comms(
-    func: Optional[  # pyre-fixme[24]: Generic type `Callable` expects 2 type parameters.
-        Callable
-    ] = None,
-    backend: Optional[str] = None,
-) -> Optional[  # pyre-fixme[24]: Generic type `Callable` expects 2 type parameters.
-    Callable
-]:
+def with_comms(func: TestFunc) -> TestFunc:
     assert func is not None
 
     @wraps(func)  # pyre-ignore[6]
@@ -159,22 +175,43 @@ def with_comms(
         self, *args: Tuple[object], **kwargs: Dict[str, Any]  # type: ignore[misc]
     ) -> None:
         # if backend not specified, and cuda available, then use nccl, else gloo
+        if torch.cuda.is_available() and torch.cuda.device_count() >= self.world_size:
+            self.device_type = "cuda"
+        else:
+            self.device_type = "cpu"
+
         pg_backend = (
-            "nccl" if backend is None and torch.cuda.is_available() else "gloo"
+            "nccl" if self.device_type == "cuda" else "gloo"
         )
         if pg_backend == "nccl" and torch.cuda.device_count() < self.world_size:
             sys.exit(TEST_SKIPS[f"multi-gpu-{self.world_size}"].exit_code)
 
-        self.device_type = "cuda" if pg_backend == "nccl" else "cpu"
         self.init_pg(backend=pg_backend)
-        func(self)  # type: ignore[misc]
+        func(self, *args, **kwargs)  # type: ignore[misc]
         self.destroy_pg()
 
     return wrapper
 
 
+class DTensorOpTestBase(MultiThreadedTestCase):
+    @property
+    def world_size(self) -> int:
+        return NUM_DEVICES
+
+    @property
+    def device_type(self) -> str:
+        return DEVICE_TYPE
+
+    def build_device_mesh(self):
+        return DeviceMesh(self.device_type, list(range(self.world_size)))
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._spawn_threads()
+
+
 # This is a class for converting args/kwargs of an op into distributed args/kwargs
-class DTensorConverter(object):
+class DTensorConverter:
     def __init__(
         self,
         mesh: DeviceMesh,
@@ -290,8 +327,8 @@ class DTensorConverter(object):
                 tree_unflatten(new_args, self.flatten_args_spec),
                 tree_unflatten(new_kwargs, self.flatten_kwargs_spec),
             )
-        except StopIteration:
-            raise StopIteration
+        except StopIteration as e:
+            raise StopIteration from e
 
     def to_dist_tensor(
         self, t: torch.Tensor, mesh: DeviceMesh, placements: List[Placement]
@@ -307,9 +344,11 @@ class DTensorConverter(object):
                     r = DTensor(
                         t,
                         mesh,
-                        placements,
+                        tuple(placements),
                         size=t.size(),
+                        dtype=torch.bool,
                         requires_grad=t.requires_grad,
+                        stride=t.stride()
                     )
                 else:
                     r = distribute_tensor(t, mesh, placements)

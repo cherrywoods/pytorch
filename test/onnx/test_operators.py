@@ -105,9 +105,7 @@ class TestOperators(common_utils.TestCase):
                 # Assume:
                 #     1) the old test should be delete before the test.
                 #     2) only one assertONNX in each test, otherwise will override the data.
-                assert not os.path.exists(output_dir), "{} should not exist!".format(
-                    output_dir
-                )
+                assert not os.path.exists(output_dir), f"{output_dir} should not exist!"
                 os.makedirs(output_dir)
                 with open(os.path.join(output_dir, "model.onnx"), "wb") as file:
                     file.write(model_def.SerializeToString())
@@ -654,14 +652,10 @@ class TestOperators(common_utils.TestCase):
         x = torch.randn(1, 2, requires_grad=True)
         self.assertONNX(lambda x: x.repeat(1, 2, 3, 4), x)
 
-    @unittest.skip("It started failing after #81761")
-    # TODO(#83661): Fix and enable the test
     def test_norm_p1(self):
         x = torch.randn(1, 2, 3, 4, requires_grad=True)
         self.assertONNX(lambda x: x.norm(p=1, dim=2), (x))
 
-    @unittest.skip("It started failing after #81761")
-    # TODO(#83661): Fix and enable the test
     def test_norm_p2(self):
         x = torch.randn(1, 2, 3, 4, requires_grad=True)
         self.assertONNX(lambda x: x.norm(p=2, dim=2), (x))
@@ -884,7 +878,7 @@ class TestOperators(common_utils.TestCase):
     #    def test_c2_op(self):
     #        class MyModel(torch.nn.Module):
     #            def __init__(self):
-    #                super(MyModel, self).__init__()
+    #                super().__init__()
     #
     #            def forward(self, scores, bbox_deltas, im_info, anchors):
     #                a, b = torch.ops._caffe2.GenerateProposals(
@@ -961,8 +955,6 @@ class TestOperators(common_utils.TestCase):
             lambda x: torch.pixel_shuffle(x, upscale_factor=2), x, opset_version=11
         )
 
-    @unittest.skip("It started failing after #81761")
-    # TODO(#83661): Fix and enable the test
     def test_frobenius_norm(self):
         x = torch.randn(2, 3, 4).float()
         self.assertONNX(lambda x: torch.norm(x, p="fro", dim=(0, 1), keepdim=True), x)
@@ -1000,6 +992,16 @@ class TestOperators(common_utils.TestCase):
         y = torch.zeros(4, requires_grad=True)
         z = torch.ones(5, requires_grad=True)
         self.assertONNX(lambda x, y, z: torch.meshgrid(x, y, z), (x, y, z))
+
+    def test_meshgrid_indexing(self):
+        x = torch.ones(3, requires_grad=True)
+        y = torch.zeros(4, requires_grad=True)
+        z = torch.ones(5, requires_grad=True)
+        self.assertONNX(
+            lambda x, y, z: torch.meshgrid(x, y, z, indexing="xy"),
+            (x, y, z),
+            opset_version=9,
+        )
 
     def test_topk(self):
         x = torch.arange(1.0, 6.0, requires_grad=True)

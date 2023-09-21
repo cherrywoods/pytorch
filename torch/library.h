@@ -64,8 +64,8 @@
 #include <torch/csrc/jit/frontend/function_schema_parser.h>
 
 // Just for inferFunctionSchemaFromFunctor
-#include <ATen/core/op_registration/op_registration.h>
 #include <ATen/core/enum_tag.h>
+#include <ATen/core/op_registration/op_registration.h>
 
 namespace torch {
 
@@ -87,10 +87,7 @@ struct NoInferSchemaTag {};
 #endif
 
 // For multipy/torchdeploy use case
-enum class _RegisterOrVerify {
-  REGISTER,
-  VERIFY
-};
+enum class _RegisterOrVerify { REGISTER, VERIFY };
 
 template <class CurClass>
 class class_;
@@ -241,8 +238,7 @@ class TORCH_API CppFunction final {
   /// torch::Library::fallback().
   template <c10::BoxedKernel::BoxedKernelFunction* func>
   static CppFunction makeFromBoxedFunction() {
-    return makeFromBoxedKernel(
-        c10::BoxedKernel::makeFromFunction<func>());
+    return makeFromBoxedKernel(c10::BoxedKernel::makeFromFunction<func>());
   }
 
   // Variant that takes in a boxed kernel function with a plumbed
@@ -250,8 +246,7 @@ class TORCH_API CppFunction final {
   // details.
   template <c10::BoxedKernel::BoxedKernelFunction_withDispatchKeys* func>
   static CppFunction makeFromBoxedFunction() {
-    return makeFromBoxedKernel(
-        c10::BoxedKernel::makeFromFunction<func>());
+    return makeFromBoxedKernel(c10::BoxedKernel::makeFromFunction<func>());
   }
 
   /// Create a function from a boxed kernel functor which defines
@@ -362,6 +357,8 @@ inline CppFunction dispatch(c10::DeviceType type, Func&& raw_f) {
         return c10::DispatchKey::XLA;
       case c10::DeviceType::Lazy:
         return c10::DispatchKey::Lazy;
+      case c10::DeviceType::XPU:
+        return c10::DispatchKey::XPU;
       case c10::DeviceType::MPS:
         return c10::DispatchKey::MPS;
       case c10::DeviceType::Meta:
@@ -372,6 +369,8 @@ inline CppFunction dispatch(c10::DeviceType type, Func&& raw_f) {
         return c10::DispatchKey::ORT;
       case c10::DeviceType::HPU:
         return c10::DispatchKey::HPU;
+      case c10::DeviceType::MTIA:
+        return c10::DispatchKey::MTIA;
       case c10::DeviceType::PrivateUse1:
         return c10::DispatchKey::PrivateUse1;
       default:
@@ -427,19 +426,12 @@ inline c10::FunctionSchema&& schema(c10::FunctionSchema&& s) {
 
 namespace detail {
 
-inline c10::either<c10::OperatorName, c10::FunctionSchema> constructSchemaOrName(
-    c10::FunctionSchema&& s) {
-  return c10::make_right<c10::OperatorName, c10::FunctionSchema>(std::move(s));
-}
-inline c10::either<c10::OperatorName, c10::FunctionSchema> constructSchemaOrName(
-    c10::OperatorName&& n) {
-  return c10::make_left<c10::OperatorName, c10::FunctionSchema>(std::move(n));
-}
-inline c10::either<c10::OperatorName, c10::FunctionSchema> constructSchemaOrName(
-    const char* str) {
+inline std::variant<c10::OperatorName, c10::FunctionSchema>
+constructSchemaOrName(const char* str) {
   auto s = torch::jit::parseSchemaOrName(str);
-  if (s.is_right()) {
-    s.right().setAliasAnalysis(c10::AliasAnalysisKind::FROM_SCHEMA);
+  if (std::holds_alternative<c10::FunctionSchema>(s)) {
+    std::get<c10::FunctionSchema>(s).setAliasAnalysis(
+        c10::AliasAnalysisKind::FROM_SCHEMA);
   }
   return s;
 }
@@ -597,7 +589,10 @@ class TORCH_API Library final {
   /// ```
 
   template <typename Schema>
-  Library& def(Schema&& raw_schema, const std::vector<at::Tag>& tags = {}, _RegisterOrVerify rv = _RegisterOrVerify::REGISTER) & {
+  Library& def(
+      Schema&& raw_schema,
+      const std::vector<at::Tag>& tags = {},
+      _RegisterOrVerify rv = _RegisterOrVerify::REGISTER) & {
     c10::FunctionSchema s = schema(std::forward<Schema>(raw_schema));
     return _def(std::move(s), nullptr, tags, rv);
   }
@@ -625,9 +620,17 @@ class TORCH_API Library final {
   template <typename NameOrSchema, typename Func>
   Library& def(NameOrSchema&& raw_name_or_schema, Func&& raw_f) & {
     CppFunction f(std::forward<Func>(raw_f));
-    auto name_or_schema = detail::constructSchemaOrName(
-        std::forward<NameOrSchema>(raw_name_or_schema));
-    return _def(std::move(name_or_schema), std::move(f));
+    if constexpr (
+        std::is_same_v<NameOrSchema, c10::OperatorName> ||
+        std::is_same_v<NameOrSchema, c10::FunctionSchema>) {
+      return _def(
+          ::std::forward<NameOrSchema>(raw_name_or_schema), ::std::move(f));
+    } else {
+      return _def(
+          detail::constructSchemaOrName(
+              ::std::forward<NameOrSchema>(raw_name_or_schema)),
+          ::std::move(f));
+    }
   }
 
   /// Register an implementation for an operator.  You may register multiple
@@ -650,7 +653,10 @@ class TORCH_API Library final {
   /// }
   /// ```
   template <typename Name, typename Func>
-  Library& impl(Name name, Func&& raw_f, _RegisterOrVerify rv = _RegisterOrVerify::REGISTER) & {
+  Library& impl(
+      Name name,
+      Func&& raw_f,
+      _RegisterOrVerify rv = _RegisterOrVerify::REGISTER) & {
     // TODO: need to raise an error when you impl a function that has a
     // catch all def
 #if defined C10_MOBILE
@@ -726,11 +732,16 @@ class TORCH_API Library final {
     return *this;
   }
   template <typename Dispatch, typename Func>
-  Library& impl(detail::SelectiveStr<false>, Dispatch&& /*key*/, Func&& /*raw_f*/) & {
+  Library& impl(
+      detail::SelectiveStr<false>,
+      Dispatch&& /*key*/,
+      Func&& /*raw_f*/) & {
     return *this;
   }
   template <typename Func>
-  Library& impl_UNBOXED(detail::SelectiveStr<false> /*name*/, Func* /*raw_f*/) & {
+  Library& impl_UNBOXED(
+      detail::SelectiveStr<false> /*name*/,
+      Func* /*raw_f*/) & {
     static_assert(
         c10::guts::false_t<Func>(),
         ".impl_UNBOXED(...) was removed. Please use .impl(...) instead.");
@@ -752,7 +763,9 @@ class TORCH_API Library final {
         std::forward<Func>(raw_f));
   }
   template <typename Func>
-  Library& impl_UNBOXED(detail::SelectiveStr<true> /*name*/, Func* /*raw_f*/) & {
+  Library& impl_UNBOXED(
+      detail::SelectiveStr<true> /*name*/,
+      Func* /*raw_f*/) & {
     static_assert(
         c10::guts::false_t<Func>(),
         ".impl_UNBOXED(...) was removed. Please use .impl(...) instead.");
@@ -820,13 +833,14 @@ class TORCH_API Library final {
       c10::FunctionSchema&& schema,
       c10::OperatorName* out_name = nullptr,
       const std::vector<at::Tag>& tags = {},
-      _RegisterOrVerify rv = _RegisterOrVerify::REGISTER
-      ) &;
+      _RegisterOrVerify rv = _RegisterOrVerify::REGISTER) &;
   Library& _def(
-      c10::either<c10::OperatorName, c10::FunctionSchema>&&,
+      std::variant<c10::OperatorName, c10::FunctionSchema>&&,
       CppFunction&& f) &;
-  Library& _impl(const char* name, CppFunction&& f,
-    _RegisterOrVerify rv = _RegisterOrVerify::REGISTER) &;
+  Library& _impl(
+      const char* name,
+      CppFunction&& f,
+      _RegisterOrVerify rv = _RegisterOrVerify::REGISTER) &;
   Library& _fallback(CppFunction&& f) &;
 
   at::OperatorName _parseNameForLib(const char* name_str) const;
@@ -969,24 +983,20 @@ class TorchLibraryInit final {
 /// variable name collisions. This can happen if TORCH_LIBRARY_IMPL is called
 /// multiple times with the same namespace and dispatch key in the same
 /// translation unit.
-#define _TORCH_LIBRARY_IMPL(ns, k, m, uid)                             \
-  static void C10_CONCATENATE(                                         \
-      TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid)(torch::Library&);    \
-  static const torch::detail::TorchLibraryInit C10_CONCATENATE(        \
-      TORCH_LIBRARY_IMPL_static_init_##ns##_##k##_, uid)(              \
-      torch::Library::IMPL,                                            \
-      c10::guts::if_constexpr<c10::impl::dispatch_key_allowlist_check( \
-          c10::DispatchKey::k)>(                                       \
-          []() {                                                       \
-            return &C10_CONCATENATE(                                   \
-                TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid);           \
-          },                                                           \
-          []() { return [](torch::Library&) -> void {}; }),            \
-      #ns,                                                             \
-      c10::make_optional(c10::DispatchKey::k),                         \
-      __FILE__,                                                        \
-      __LINE__);                                                       \
-  void C10_CONCATENATE(                                                \
+#define _TORCH_LIBRARY_IMPL(ns, k, m, uid)                                \
+  static void C10_CONCATENATE(                                            \
+      TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid)(torch::Library&);       \
+  static const torch::detail::TorchLibraryInit C10_CONCATENATE(           \
+      TORCH_LIBRARY_IMPL_static_init_##ns##_##k##_, uid)(                 \
+      torch::Library::IMPL,                                               \
+      (c10::impl::dispatch_key_allowlist_check(c10::DispatchKey::k)       \
+           ? &C10_CONCATENATE(TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid) \
+           : [](torch::Library&) -> void {}),                             \
+      #ns,                                                                \
+      c10::make_optional(c10::DispatchKey::k),                            \
+      __FILE__,                                                           \
+      __LINE__);                                                          \
+  void C10_CONCATENATE(                                                   \
       TORCH_LIBRARY_IMPL_init_##ns##_##k##_, uid)(torch::Library & m)
 
 // These are variants of the macros above which are to be used for testing (they

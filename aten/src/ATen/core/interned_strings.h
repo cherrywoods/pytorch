@@ -163,7 +163,11 @@ namespace c10 {
   _(aten, is_scripting)              \
   _(aten, _unwrap_optional)          \
   _(prim, fork)                      \
+  _(prim, awaitable)                 \
   _(prim, forkClosure)               \
+  _(prim, awaitableClosure)          \
+  _(prim, awaitable_nowait)          \
+  _(prim, awaitable_wait)            \
   _(prim, RaiseException)            \
   _(prim, Closure)                   \
   _(prim, CreateObject)              \
@@ -227,6 +231,7 @@ namespace c10 {
   _(aten, has_torch_function)        \
   _(aten, is_autocast_enabled)       \
   _(aten, is_autocast_cpu_enabled)   \
+  _(aten, is_autocast_xla_enabled)   \
   FORALL_ATEN_BASE_SYMBOLS(_)        \
   _(onnx, Add)                       \
   _(onnx, Concat)                    \

@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from torch.nn.parameter import UninitializedParameter, UninitializedBuffer
 from torch.nn import Parameter
-from torch.testing._internal.common_utils import TestCase, run_tests, suppress_warnings
+from torch.testing._internal.common_utils import TestCase, run_tests, suppress_warnings, TEST_PRIVATEUSE1
 from torch.testing._internal.common_cuda import TEST_CUDA
 
 class LazyModule(torch.nn.modules.lazy.LazyModuleMixin, torch.nn.Module):
@@ -118,7 +118,7 @@ class TestLazyModules(TestCase):
         self.assertTrue(module.weight.shape == (10, 5))
         self.assertTrue(module.bias.shape == (10,))
         y = module(input)
-        self.assertEqual(torch.nn.functional.linear(input, module.weight, module.bias), y, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(torch.nn.functional.linear(input, module.weight, module.bias), y))
 
     @suppress_warnings
     def test_lazy_linear_pickle(self):
@@ -170,7 +170,7 @@ class TestLazyModules(TestCase):
         if module.bias is not None:
             self.assertEqual(module.bias.shape, expected_bias_shape)
         y = module(input)
-        self.assertEqual(func(input, module.weight, module.bias), y, rtol=0, atol=0, exact_device=True)
+        self.assertTrue(torch.equal(func(input, module.weight, module.bias), y))
 
     def _check_lazy_conv_pickle(self, cls, lazy_cls, init_args, input_shape,
                                 expected_weight_shape, expected_bias_shape):
@@ -219,9 +219,6 @@ class TestLazyModules(TestCase):
         functions successfully.
         """
         class TestModule(torch.nn.modules.lazy.LazyModuleMixin, torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-
             def initialize_parameters(self, input):
                 return None
 
@@ -242,9 +239,6 @@ class TestLazyModules(TestCase):
         functions successfully.
         """
         class TestModule(torch.nn.modules.lazy.LazyModuleMixin, torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-
             def initialize_parameters(self, input):
                 return None
 
@@ -460,6 +454,18 @@ class TestLazyModules(TestCase):
         with self.assertRaisesRegex(RuntimeError, 'shape of an uninitialized'):
             module.load_state_dict(lazy_module.state_dict())
 
+    def _check_lazy_norm_with_dict_input(self, cls, lazy_cls, input_shape):
+        input = {"input": torch.ones(*input_shape)}
+
+        lazy_module = lazy_cls()
+        lazy_output = lazy_module(**input)
+
+        num_features = input_shape[1]
+        module = cls(num_features)
+        expected_output = module(**input)
+
+        self.assertEqual(lazy_output, expected_output)
+
     def test_lazy_batchnorm1d(self):
         self._check_lazy_norm(nn.BatchNorm1d, nn.LazyBatchNorm1d, (16, 3, 6))
         self._check_lazy_norm(nn.BatchNorm1d, nn.LazyBatchNorm1d, (16, 6))
@@ -522,6 +528,11 @@ class TestLazyModules(TestCase):
         self._check_lazy_instancenorm_state(nn.InstanceNorm3d, nn.LazyInstanceNorm3d)
         self._check_lazy_instancenorm_state(nn.InstanceNorm3d, nn.LazyInstanceNorm3d)
 
+    def test_lazy_batchnorm_with_dict_input(self):
+        self._check_lazy_norm_with_dict_input(nn.BatchNorm1d, nn.LazyBatchNorm1d, (16, 3, 6))
+        self._check_lazy_norm_with_dict_input(nn.BatchNorm2d, nn.LazyBatchNorm2d, (16, 3, 6, 7))
+        self._check_lazy_norm_with_dict_input(nn.BatchNorm3d, nn.LazyBatchNorm3d, (16, 3, 6, 7, 8))
+
     @suppress_warnings
     def test_materialize_dtype(self):
         module = LazyModule()
@@ -534,24 +545,28 @@ class TestLazyModules(TestCase):
         module.test_param.materialize(10)
         self.assertTrue(module.test_param.dtype == torch.float16)
 
-    @unittest.skipIf(not TEST_CUDA, 'CUDA not available')
+    @unittest.skipIf(not (TEST_CUDA or TEST_PRIVATEUSE1), 'CUDA and PRIVATEUSE1 not available')
     @suppress_warnings
     def test_materialize_device(self):
         module = LazyModule()
         module.register_parameter('test_param', UninitializedParameter())
         module.test_param.materialize(10)
         self.assertTrue(module.test_param.device.type == 'cpu')
+        if TEST_CUDA:
+            device = 'cuda'
+        elif TEST_PRIVATEUSE1:
+            device = torch._C._get_privateuse1_backend_name()
         module = LazyModule()
         module.register_parameter('test_param', UninitializedParameter())
-        module.cuda()
+        module.to(device)
         module.test_param.materialize(10)
-        self.assertTrue(module.test_param.device.type == 'cuda')
+        self.assertTrue(module.test_param.device.type == device)
 
     @suppress_warnings
     def test_chained_initialization(self):
         class MyNetwork(torch.nn.Module):
             def __init__(self):
-                super(MyNetwork, self).__init__()
+                super().__init__()
                 self.linear_1 = torch.nn.LazyLinear(15)
                 self.linear_2 = torch.nn.LazyLinear(10)
 

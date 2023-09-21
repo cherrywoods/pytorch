@@ -64,7 +64,7 @@ const AnnotatedKernel& OperatorEntry::ambiguousAutogradOtherKernel() const {
   return kernel;
 }
 
-void OperatorEntry::assertSignatureIsCorrect(const CppSignature call_signature, bool has_symint) const {
+void OperatorEntry::assertSignatureIsCorrect(const CppSignature& call_signature, bool has_symint) const {
   if (has_symint) {
     if (C10_UNLIKELY(sym_cpp_signature_.has_value() && (call_signature != sym_cpp_signature_->signature))) {
       reportSignatureError(call_signature, *sym_cpp_signature_);
@@ -145,12 +145,13 @@ OperatorEntry::AnnotatedKernelContainerIterator OperatorEntry::registerKernel(
 #ifdef C10_DISPATCHER_ONE_KERNEL_PER_DISPATCH_KEY
   if (k[0].kernel.isValid()) {
 #else
-  if (k.size() > 0) {
+  if (!k.empty()) {
 #endif
     // Suppress the warning for Meta key as we are overriding C++ meta functions with python meta functions
     // for some ops
     if (dispatch_key != DispatchKey::Meta) {
-      TORCH_WARN("Overriding a previously registered kernel for the same operator and the same dispatch key\n",
+      TORCH_WARN_ONCE("Warning only once for all operators,  other operators may also be overrided.\n",
+            "  Overriding a previously registered kernel for the same operator and the same dispatch key\n",
             "  operator: ", (schema_.has_value() ? toString(schema_->schema) : toString(name_)), "\n",
             "    ", (this->schema_.has_value() ? this->schema_->debug : "no debug info"), "\n",
             "  dispatch key: ", toString(dispatch_key), "\n",
@@ -221,12 +222,12 @@ bool OperatorEntry::hasKernelForDispatchKey(DispatchKey k) const {
   TORCH_INTERNAL_ASSERT(kernels_.find(DispatchKey::Undefined) == kernels_.end());
   auto it = kernels_.find(k);
   if (it == kernels_.end()) return false;
-  return it->second.size() > 0;
+  return !it->second.empty();
 }
 
 const KernelFunction& OperatorEntry::kernelForDispatchKey(DispatchKey k) const {
   auto it = kernels_.find(k);
-  TORCH_CHECK(it != kernels_.end() && it->second.size(), "no kernel for ", k, " on ", name_);
+  TORCH_CHECK(it != kernels_.end() && !it->second.empty(), "no kernel for ", k, " on ", name_);
   auto jt = it->second.begin();
   TORCH_INTERNAL_ASSERT(jt->kernel.isValid())
   return jt->kernel;
@@ -462,7 +463,7 @@ void OperatorEntry::checkInvariants() const {
   }
   TORCH_INTERNAL_ASSERT(kernels_.find(DispatchKey::Undefined) == kernels_.end(), dumpState());
   for (const auto& kv : kernels_) {
-    TORCH_INTERNAL_ASSERT(kv.second.size() > 0, dumpState());
+    TORCH_INTERNAL_ASSERT(!kv.second.empty(), dumpState());
   }
   for (auto k : DispatchKeySet(DispatchKeySet::FULL)) {
     auto expected_k = computeDispatchTableEntry(c10::Dispatcher::singleton(), k);
@@ -509,7 +510,7 @@ void OperatorEntry::reportSignatureError(const CppSignature& call_signature, con
   );
 };
 
-std::string post_process_dispatch_key_str(std::string dispatch_key) {
+static std::string post_process_dispatch_key_str(std::string dispatch_key) {
   const std::string substr = "PrivateUse1";
   if (substr.size() <= dispatch_key.size() && std::equal(substr.rbegin(), substr.rend(), dispatch_key.rbegin())) {
     auto privateuse1_backend = get_privateuse1_backend();
@@ -529,6 +530,11 @@ void OperatorEntry::reportError(DispatchKey dispatchKey) const {
   // If there is an invariant problem, report it now.
   checkInvariants();
 
+  if (report_error_callback_ != nullptr) {
+    report_error_callback_->pyinterpreter()->reportErrorCallback(report_error_callback_->ptr(&report_error_callback_->pyinterpreter()), dispatchKey);
+    // reportErrorCallback should have raised an error
+    TORCH_INTERNAL_ASSERT(false);
+  }
   if (dispatchKey == DispatchKey::Undefined) {
     TORCH_CHECK_NOT_IMPLEMENTED(false,
           "There were no tensor arguments to this function (e.g., you passed an "
@@ -571,6 +577,10 @@ std::string OperatorEntry::dumpComputedTable() const {
     }
   }
   return oss.str();
+}
+
+void OperatorEntry::setReportErrorCallback_(std::unique_ptr<c10::SafePyObject> callback) {
+  report_error_callback_ = std::move(callback);
 }
 
 // Inspect the "canonical" information in OperatorEntry.  This only prints out

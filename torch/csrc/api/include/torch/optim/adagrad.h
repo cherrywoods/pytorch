@@ -84,17 +84,13 @@ class TORCH_API Adagrad : public Optimizer {
             p.data(),
             defaults.initial_accumulator_value(),
             at::MemoryFormat::Preserve));
-        state_[c10::guts::to_string(p.unsafeGetTensorImpl())] =
-            std::move(state);
+        state_[p.unsafeGetTensorImpl()] = std::move(state);
       }
     }
   }
 
-  explicit Adagrad(
-      std::vector<Tensor> params,
-      // NOLINTNEXTLINE(performance-move-const-arg)
-      AdagradOptions defaults = {})
-      : Adagrad({std::move(OptimizerParamGroup(params))}, defaults) {}
+  explicit Adagrad(std::vector<Tensor> params, AdagradOptions defaults = {})
+      : Adagrad({OptimizerParamGroup(std::move(params))}, defaults) {}
 
   torch::Tensor step(LossClosure closure = nullptr) override;
   void save(serialize::OutputArchive& archive) const override;
